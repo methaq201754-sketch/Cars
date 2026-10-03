@@ -9,12 +9,10 @@
       "resizeMode": "contain",
       "backgroundColor": "#C0272D"
     },
-    "ios": {
-      "supportsTablet": true
-    },
     "android": {
       "package": "com.fleet.management.app",
-      "versionCode": 40
+      "versionCode": 40,
+      "minSdkVersion": 21
     }
   }
 }

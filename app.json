@@ -1,0 +1,27 @@
+{
+  "expo": {
+    "name": "إدارة السيارات",
+    "slug": "fleet-management-app",
+    "version": "1.2.4",
+    "orientation": "portrait",
+    "icon": "./assets/icon.png",
+    "userInterfaceStyle": "light",
+    "splash": {
+      "resizeMode": "contain",
+      "backgroundColor": "#C0272D"
+    },
+    "ios": {
+      "supportsTablet": true
+    },
+    "android": {
+      "package": "com.fleet.management.app",
+      "versionCode": 40,
+      "adaptiveIcon": {
+        "backgroundColor": "#C0272D"
+      }
+    },
+    "web": {
+      "favicon": "./assets/favicon.png"
+    }
+  }
+}

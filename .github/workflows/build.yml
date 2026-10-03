@@ -38,17 +38,17 @@ jobs:
           NODE_ENV: production
         run: npx expo prebuild --platform android
 
-      - name: 🤖 Build Android APK (Debug Mode)
+      - name: 🤖 Build Signed Release APK
         env:
           NODE_ENV: production
           GRADLE_OPTS: "-Dorg.gradle.jvmargs=-Xmx4096m -XX:MaxMetaspaceSize=1024m -XX:+HeapDumpOnOutOfMemoryError"
         run: |
           cd android
           chmod +x gradlew
-          ./gradlew assembleDebug --no-daemon -Dorg.gradle.parallel=false
+          ./gradlew assembleRelease --no-daemon -Dorg.gradle.parallel=false
 
       - name: 📤 Upload APK Artifact
         uses: actions/upload-artifact@v4
         with:
           name: FleetApp-v1.2.4-Build40
-          path: android/app/build/outputs/apk/debug/app-debug.apk
+          path: android/app/build/outputs/apk/release/*.apk

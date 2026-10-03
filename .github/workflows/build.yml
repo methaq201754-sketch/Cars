@@ -33,7 +33,7 @@ jobs:
         run: npm install -g eas-cli expo-cli
 
       - name: 🏗️ Prebuild Android Project
-        run: npx expo prebuild --platform android
+        run: npx expo prebuild --platform android --no-interactive
 
       - name: 🤖 Build Android APK
         run: |

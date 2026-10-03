@@ -35,13 +35,17 @@ jobs:
       - name: 🏗️ Prebuild Android Project
         env:
           CI: 1
+          NODE_ENV: production
         run: npx expo prebuild --platform android
 
       - name: 🤖 Build Android APK (Debug Mode)
+        env:
+          NODE_ENV: production
+          GRADLE_OPTS: "-Dorg.gradle.jvmargs=-Xmx4096m -XX:MaxMetaspaceSize=1024m -XX:+HeapDumpOnOutOfMemoryError"
         run: |
           cd android
           chmod +x gradlew
-          ./gradlew assembleDebug --no-daemon
+          ./gradlew assembleDebug --no-daemon -Dorg.gradle.parallel=false
 
       - name: 📤 Upload APK Artifact
         uses: actions/upload-artifact@v4

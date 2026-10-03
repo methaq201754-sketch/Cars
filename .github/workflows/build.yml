@@ -38,6 +38,13 @@ jobs:
           NODE_ENV: production
         run: npx expo prebuild --platform android
 
+      - name: 🔑 Configure Release Signing Key
+        run: |
+          cd android/app
+          keytool -genkeypair -v -keystore release.keystore -alias releasekey -keyalg RSA -keysize 2048 -validity 10000 -storepass android -keypass android -dname "CN=FleetApp, OU=Dev, O=Fleet, L=Taiz, S=Taiz, C=YE"
+          sed -i '/signingConfigs {/a \        release {\n            storeFile file("release.keystore")\n            storePassword "android"\n            keyAlias "releasekey"\n            keyPassword "android"\n        }' build.gradle
+          sed -i 's/signingConfig signingConfigs.debug/signingConfig signingConfigs.release/g' build.gradle
+
       - name: 🤖 Build Signed Release APK
         env:
           NODE_ENV: production
@@ -51,4 +58,4 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: FleetApp-v1.2.4-Build40
-          path: android/app/build/outputs/apk/release/*.apk
+          path: android/app/build/outputs/apk/release/app-release.apk

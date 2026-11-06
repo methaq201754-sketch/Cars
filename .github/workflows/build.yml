@@ -1,61 +1,47 @@
-name: Build Android APK
-
+name: Build Android APK - Employee Survey
 on:
   push:
-    branches:
-      - main
-      - master
+    branches: [main, master]
   workflow_dispatch:
-
 jobs:
   build:
     runs-on: ubuntu-latest
-
     steps:
-      - name: 📥 Checkout Repository
+      - name: Checkout
         uses: actions/checkout@v4
-
-      - name: 🟢 Setup Node.js
+      - name: Setup Node
         uses: actions/setup-node@v4
         with:
           node-version: 20
-
-      - name: ☕ Setup Java JDK
+          cache: npm
+      - name: Setup Java
         uses: actions/setup-java@v4
         with:
-          distribution: 'temurin'
-          java-version: '17'
-
-      - name: 📦 Install Dependencies
+          distribution: temurin
+          java-version: "17"
+      - name: Install dependencies
         run: npm install
-
-      - name: 🛠️ Install Expo CLI
-        run: npm install -g eas-cli expo-cli
-
-      - name: 🏗️ Prebuild Android Project
+      - name: Expo prebuild
         env:
           CI: 1
           NODE_ENV: production
-        run: npx expo prebuild --platform android
-
-      - name: 🔑 Configure Release Signing Key
+        run: npx expo prebuild --platform android --non-interactive
+      - name: Configure signing
         run: |
           cd android/app
-          keytool -genkeypair -v -keystore release.keystore -alias releasekey -keyalg RSA -keysize 2048 -validity 10000 -storepass android -keypass android -dname "CN=FleetApp, OU=Dev, O=Fleet, L=Taiz, S=Taiz, C=YE"
-          sed -i '/signingConfigs {/a \        release {\n            storeFile file("release.keystore")\n            storePassword "android"\n            keyAlias "releasekey"\n            keyPassword "android"\n        }' build.gradle
+          keytool -genkeypair -v -keystore release.keystore -alias releasekey -keyalg RSA -keysize 2048 -validity 10000 -storepass android -keypass android -dname "CN=EmployeeSurvey, OU=Dev, O=Company, L=Taiz, S=Taiz, C=YE"
+          sed -i '/signingConfigs {/a\        release {\n            storeFile file("release.keystore")\n            storePassword "android"\n            keyAlias "releasekey"\n            keyPassword "android"\n        }' build.gradle
           sed -i 's/signingConfig signingConfigs.debug/signingConfig signingConfigs.release/g' build.gradle
-
-      - name: 🤖 Build Signed Release APK
+      - name: Build APK
         env:
           NODE_ENV: production
-          GRADLE_OPTS: "-Dorg.gradle.jvmargs=-Xmx4096m -XX:MaxMetaspaceSize=1024m -XX:+HeapDumpOnOutOfMemoryError"
+          GRADLE_OPTS: "-Dorg.gradle.jvmargs=-Xmx4096m -XX:MaxMetaspaceSize=1024m"
         run: |
           cd android
           chmod +x gradlew
           ./gradlew assembleRelease --no-daemon -Dorg.gradle.parallel=false
-
-      - name: 📤 Upload APK Artifact
+      - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
-          name: FleetApp-v1.2.4-Build40
+          name: EmployeeSurvey-v1.0.0
           path: android/app/build/outputs/apk/release/app-release.apk

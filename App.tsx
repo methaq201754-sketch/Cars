@@ -10,7 +10,7 @@ import * as Print from "expo-print";
 
 const SUPABASE_URL = "https://gzjkikvvdtjpoxrrwvmi.supabase.co";
 // anon public key only. Never place service_role here.
-const SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJvbGUiOiJhbm9uIiwiaWF0IjoxNzkzOTY4OTE5LCJleHAiOjIxMDk1NDQ5MTl9.U6s_ozaKf9QLDU63kg999dipR0jBejibnQHcm55MzSs";
+const SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Imd6amtpa3Z2ZHRqcG94cnJ3dm1pIiwicm9sZSI6ImFub24iLCJpYXQiOjE3OTM5Njg5MTksImV4cCI6MjEwOTU0NDkxOX0.uS6_ozaKf9QLDU63kg999dipR0jBejibnQHcm55MzSs";
 const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
 
 const C = { primary:"#C0272D", dark:"#9E1F24", orange:"#FF7A45", bg:"#F4F7FB", text:"#20252B", muted:"#68727D", border:"#D9DEE5", success:"#18864B", pale:"#FFF5EF" };

@@ -2,7 +2,7 @@
   "expo": {
     "name": "استبيان رضا الموظفين",
     "slug": "employee-satisfaction-survey",
-    "version": "1.1.0",
+    "version": "1.2.1",
     "orientation": "portrait",
     "userInterfaceStyle": "light",
     "splash": {
@@ -11,8 +11,8 @@
     },
     "android": {
       "package": "com.company.employee.survey",
-      "versionCode": 2,
-      "minSdkVersion": 21
+      "versionCode": 3,
+      "minSdkVersion": 22
     }
   }
 }

@@ -1,4 +1,6 @@
-import React, { useMemo, useState } from "react";
+import "react-native-url-polyfill/auto";
+import React, { useEffect, useMemo, useState } from "react";
+import AsyncStorage from "@react-native-async-storage/async-storage";
 import {
   Alert, KeyboardAvoidingView, Platform, Pressable, SafeAreaView,
   ScrollView, StatusBar, StyleSheet, Text, TextInput, View, ActivityIndicator
@@ -9,9 +11,11 @@ import * as Sharing from "expo-sharing";
 import * as Print from "expo-print";
 
 const SUPABASE_URL = "https://gzjkikvvdtjpoxrrwvmi.supabase.co";
-// anon public key only. Never place service_role here.
+// Supabase public client key only.
 const SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Imd6amtpa3Z2ZHRqcG94cnJ3dm1pIiwicm9sZSI6ImFub24iLCJpYXQiOjE3OTM5Njg5MTksImV4cCI6MjEwOTU0NDkxOX0.uS6_ozaKf9QLDU63kg999dipR0jBejibnQHcm55MzSs";
-const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
+  auth: { storage: AsyncStorage, autoRefreshToken: true, persistSession: true, detectSessionInUrl: false }
+});
 
 const C = { primary:"#C0272D", dark:"#9E1F24", orange:"#FF7A45", bg:"#F4F7FB", text:"#20252B", muted:"#68727D", border:"#D9DEE5", success:"#18864B", pale:"#FFF5EF" };
 const DEPARTMENTS = ["الموارد البشرية","التخطيط والمخازن","الجودة والبحث والتطوير","الصيانة","المبيعات والتسويق","الرقابة والمراجعة الداخلية","الصفيح","المالية","إنتاج الطلاء","إنتاج الجاما"];
@@ -32,10 +36,13 @@ const errText = (e:any) => e?.message || e?.details || "حدث خطأ غير م�
 const escapeCsv = (v:any) => `"${String(v ?? "").replace(/"/g,'""')}"`;
 
 export default function App() {
-  const [screen,setScreen] = useState<"login"|"home"|"employee"|"survey"|"result"|"admin">("login");
+  const [screen,setScreen] = useState<"login"|"dashboard"|"home"|"employee"|"survey"|"result"|"admin">("login");
   const [employeeNo,setEmployeeNo] = useState("");
   const [password,setPassword] = useState("");
   const [employee,setEmployee] = useState<Employee|null>(null);
+  const [roleCodes,setRoleCodes] = useState<string[]>([]);
+  const [permissions,setPermissions] = useState<Record<string,boolean>>({});
+  const [systemAdmin,setSystemAdmin] = useState(false);
   const [catalog,setCatalog] = useState<Survey[]>([]);
   const [selectedSurvey,setSelectedSurvey] = useState<Survey|null>(null);
   const [department,setDepartment] = useState("");
@@ -72,26 +79,97 @@ export default function App() {
     return list;
   };
 
-  const login = async () => {
-    const no = employeeNo.trim();
-    if(!no || !password){Alert.alert("بيانات الدخول","أدخل الرقم الوظيفي وكلمة المرور.");return;}
-    // حسب إعداد النظام الحالي، كلمة المرور الأولية تطابق الرقم الوظيفي.
-    if(password.trim() !== no){Alert.alert("تعذر الدخول","كلمة المرور غير صحيحة.");return;}
-    setBusy(true);
-    try {
-      const {data,error} = await supabase.rpc("get_survey_employee",{p_employee_number:no});
-      if(error) throw error;
-      const row = Array.isArray(data) ? data[0] : data;
-      if(!row){Alert.alert("تعذر الدخول","الرقم الوظيفي غير مسجل أو الحساب غير فعال.");return;}
-      const emp:Employee = {employee_number:row.employee_number,employee_name:row.employee_name,is_survey_admin:!!row.is_survey_admin};
-      setEmployee(emp);
-      const list = await loadCatalog();
-      if(emp.is_survey_admin){const p=list.find(x=>x.id===adminSurveyId)?.period; setPeriodStart(p?.start_at||""); setPeriodEnd(p?.end_at||""); setPeriodEnabled(!!p?.is_enabled); setScreen("admin"); await loadAdmin(adminSurveyId,emp.employee_number);}
-      else setScreen("home");
-      if(!list.length) Alert.alert("تنبيه","لم يتم العثور على استبيانات معرفة في قاعدة البيانات.");
-    } catch(e:any){Alert.alert("تعذر تسجيل الدخول",errText(e));}
-    finally{setBusy(false);}
+  const loadAuthenticatedContext = async (authUser:any) => {
+    const {data:profile,error:profileError} = await supabase
+      .from("user_profiles")
+      .select("user_id,employee_id,display_name,is_active")
+      .eq("user_id",authUser.id)
+      .maybeSingle();
+    if(profileError) throw profileError;
+    if(!profile || !profile.is_active) throw new Error("لا يوجد ملف مستخدم فعال مرتبط بهذا الحساب. يرجى مراجعة مسؤول النظام.");
+    if(!profile.employee_id) throw new Error("لم يتم ربط حساب الدخول بملف موظف.");
+
+    const {data:empRow,error:empError} = await supabase
+      .from("employees")
+      .select("id,employee_number,employee_name,is_active,employment_status")
+      .eq("id",profile.employee_id)
+      .maybeSingle();
+    if(empError) throw empError;
+    if(!empRow || !empRow.is_active || empRow.employment_status !== "active")
+      throw new Error("ملف الموظف غير فعال أو غير متاح للدخول.");
+
+    const {data:userRoleRows,error:rolesError} = await supabase
+      .from("user_roles").select("role_id").eq("user_id",authUser.id);
+    if(rolesError) throw rolesError;
+    const roleIds=(userRoleRows||[]).map((x:any)=>x.role_id);
+    let codes:string[]=[];
+    if(roleIds.length){
+      const {data:roleRows,error:roleError}=await supabase
+        .from("roles").select("role_code").in("id",roleIds).eq("is_active",true);
+      if(roleError) throw roleError;
+      codes=(roleRows||[]).map((x:any)=>x.role_code);
+    }
+    setRoleCodes(codes);
+
+    const permissionCodes=["SURVEYS_VIEW","SURVEYS_MANAGE","ASSETS_VIEW","GRIEVANCES_VIEW","GRIEVANCES_CREATE","IDEAS_VIEW","IDEAS_CREATE","SERVICES_VIEW","SERVICES_CREATE","REPORTS_VIEW","EMPLOYEES_VIEW","USERS_MANAGE","SETTINGS_MANAGE"];
+    const permissionResults=await Promise.all(permissionCodes.map(async code=>{
+      const {data,error}=await supabase.rpc("has_permission",{p_permission_code:code});
+      if(error) return [code,false] as [string,boolean];
+      return [code,data===true] as [string,boolean];
+    }));
+    const permissionMap=Object.fromEntries(permissionResults);
+    setPermissions(permissionMap);
+    const {data:isAdmin}=await supabase.rpc("is_system_admin");
+    setSystemAdmin(isAdmin===true || codes.includes("SYSTEM_ADMIN"));
+
+    let surveyAdmin=false;
+    try{
+      const {data:surveyEmployee}=await supabase.rpc("get_survey_employee",{p_employee_number:empRow.employee_number});
+      const surveyRow=Array.isArray(surveyEmployee)?surveyEmployee[0]:surveyEmployee;
+      surveyAdmin=!!surveyRow?.is_survey_admin;
+    }catch(_e){ surveyAdmin=false; }
+
+    const emp:Employee={
+      employee_number:empRow.employee_number,
+      employee_name:profile.display_name||empRow.employee_name,
+      is_survey_admin:surveyAdmin || permissionMap.SURVEYS_MANAGE===true || isAdmin===true
+    };
+    setEmployee(emp);
+    setEmployeeNo(emp.employee_number);
+    setScreen("dashboard");
   };
+
+  const login = async () => {
+    const no=employeeNo.trim();
+    if(!no || !password){Alert.alert("بيانات الدخول","أدخل الرقم الوظيفي وكلمة المرور.");return;}
+    if(!/^[0-9A-Za-z-]{3,30}$/.test(no)){Alert.alert("الرقم الوظيفي غير صحيح","تحقق من الرقم الوظيفي.");return;}
+    const email=`emp-${no}@hr.company.invalid`;
+    setBusy(true);
+    try{
+      const {data,error}=await supabase.auth.signInWithPassword({email,password});
+      if(error) throw error;
+      if(!data.user) throw new Error("تعذر التحقق من حساب المستخدم.");
+      await loadAuthenticatedContext(data.user);
+    }catch(e:any){
+      await supabase.auth.signOut();
+      Alert.alert("تعذر تسجيل الدخول",errText(e));
+    }finally{setBusy(false);}
+  };
+
+  useEffect(()=>{
+    let alive=true;
+    supabase.auth.getSession().then(async ({data,error})=>{
+      if(!alive || error || !data.session?.user) return;
+      setBusy(true);
+      try{await loadAuthenticatedContext(data.session.user);}
+      catch(e:any){await supabase.auth.signOut(); if(alive) Alert.alert("تعذر استعادة الجلسة",errText(e));}
+      finally{if(alive) setBusy(false);}
+    });
+    const {data:{subscription}}=supabase.auth.onAuthStateChange((event)=>{
+      if(event==="SIGNED_OUT" && alive){setEmployee(null);setRoleCodes([]);setPermissions({});setSystemAdmin(false);setScreen("login");}
+    });
+    return ()=>{alive=false;subscription.unsubscribe();};
+  },[]);
 
   const loadAdmin = async (surveyId:number, empNo=employee?.employee_number) => {
     if(!empNo) return;
@@ -207,15 +285,30 @@ export default function App() {
   };
 
   const reset = () => {setScreen("home");setSelectedSurvey(null);setAnswers({});setReason("");setResult(null);};
-  const logout = () => {setEmployee(null);setEmployeeNo("");setPassword("");setCatalog([]);setSelectedSurvey(null);setAdminRows([]);setScreen("login");};
+  const logout = async () => {await supabase.auth.signOut();setEmployee(null);setEmployeeNo("");setPassword("");setCatalog([]);setSelectedSurvey(null);setAdminRows([]);setRoleCodes([]);setPermissions({});setSystemAdmin(false);setScreen("login");};
 
   return <SafeAreaView style={s.safe}><StatusBar barStyle="dark-content"/>
     {screen==="login" && <ScrollView contentContainerStyle={s.container}>
-      <View style={s.hero}><Text style={s.heroTitle}>نظام استبيانات الموظفين</Text><Text style={s.heroSub}>تسجيل الدخول والمشاركة في الاستبيانات المعتمدة</Text></View>
-      <View style={s.card}><Text style={s.title}>تسجيل الدخول</Text><Text style={s.sub}>استخدم رقمك الوظيفي. كلمة المرور الحالية هي الرقم الوظيفي نفسه.</Text>
+      <View style={s.hero}><Text style={s.heroTitle}>نظام الموارد البشرية</Text><Text style={s.heroSub}>منصة موحدة لخدمات الموظفين والإدارة</Text></View>
+      <View style={s.card}><Text style={s.title}>تسجيل الدخول الآمن</Text><Text style={s.sub}>استخدم رقمك الوظيفي وكلمة المرور التي يحددها مسؤول النظام. الرقم الوظيفي ليس كلمة المرور.</Text>
         <Field label="الرقم الوظيفي" value={employeeNo} onChangeText={setEmployeeNo} keyboardType="numeric" placeholder="أدخل الرقم الوظيفي"/>
         <Field label="كلمة المرور" value={password} onChangeText={setPassword} secureTextEntry placeholder="أدخل كلمة المرور"/>
-        <Btn title={busy?"جاري الدخول...":"دخول"} disabled={busy} onPress={login}/>
+        <Btn title={busy?"جاري التحقق...":"دخول إلى النظام"} disabled={busy} onPress={login}/>
+        <Text style={s.sub}>إذا لم يكن لديك حساب، راجع مسؤول النظام لإنشاء الحساب وربطه بملفك الوظيفي.</Text>
+      </View>
+    </ScrollView>}
+
+    {screen==="dashboard" && <ScrollView contentContainerStyle={s.container}>
+      <View style={s.hero}><Text style={s.heroTitle}>مرحباً {employee?.employee_name}</Text><Text style={s.heroSub}>الرقم الوظيفي: {employee?.employee_number}</Text></View>
+      <View style={s.card}><Text style={s.title}>خدمات النظام</Text><Text style={s.sub}>تظهر الوحدات وفق الصلاحيات الممنوحة لحسابك.</Text>
+        {(systemAdmin||permissions.EMPLOYEES_VIEW)&&<View style={s.surveyCard}><Text style={s.surveyTitle}>ملف الموظفين</Text><Text style={s.sub}>إدارة بيانات الموظفين والأقسام والدرجات والمؤهلات.</Text><Text style={s.status}>واجهة الوحدة ضمن مراحل التجهيز</Text></View>}
+        {(systemAdmin||permissions.SURVEYS_VIEW||permissions.SURVEYS_MANAGE)&&<View style={s.surveyCard}><Text style={s.surveyTitle}>الاستبيانات</Text><Text style={s.sub}>استبيان رضا الموظفين وتقييم الخدمات، مع إدارة الفترات والنتائج للمخولين.</Text><Btn title="فتح وحدة الاستبيانات" onPress={async()=>{setBusy(true);try{await loadCatalog();setScreen(employee?.is_survey_admin?"admin":"home");if(employee?.is_survey_admin) await loadAdmin(adminSurveyId,employee?.employee_number);}catch(e:any){Alert.alert("تعذر تحميل الاستبيانات",errText(e));}finally{setBusy(false);}}}/></View>}
+        {(systemAdmin||permissions.ASSETS_VIEW)&&<View style={s.surveyCard}><Text style={s.surveyTitle}>الأصول والعهد</Text><Text style={s.status}>قاعدة البيانات مجهزة — واجهات التطبيق في مرحلة التجهيز</Text></View>}
+        {(systemAdmin||permissions.GRIEVANCES_VIEW||permissions.GRIEVANCES_CREATE)&&<View style={s.surveyCard}><Text style={s.surveyTitle}>الشكاوى والتظلمات والتحقيقات</Text><Text style={s.status}>قاعدة البيانات مجهزة — واجهات التطبيق في مرحلة التجهيز</Text></View>}
+        {(systemAdmin||permissions.IDEAS_VIEW||permissions.IDEAS_CREATE)&&<View style={s.surveyCard}><Text style={s.surveyTitle}>الأفكار والمقترحات</Text><Text style={s.status}>قاعدة البيانات مجهزة — واجهات التطبيق في مرحلة التجهيز</Text></View>}
+        {(systemAdmin||permissions.SERVICES_VIEW||permissions.SERVICES_CREATE)&&<View style={s.surveyCard}><Text style={s.surveyTitle}>الخدمات الإدارية والتصاريح</Text><Text style={s.status}>قاعدة البيانات مجهزة — واجهات التطبيق في مرحلة التجهيز</Text></View>}
+        {(systemAdmin||permissions.REPORTS_VIEW)&&<View style={s.surveyCard}><Text style={s.surveyTitle}>التقارير ومؤشرات الأداء</Text><Text style={s.status}>قاعدة البيانات مجهزة — واجهات التطبيق في مرحلة التجهيز</Text></View>}
+        <Btn title="تسجيل الخروج" secondary onPress={logout}/>
       </View>
     </ScrollView>}
 
@@ -223,6 +316,7 @@ export default function App() {
       <View style={s.hero}><Text style={s.heroTitle}>مرحباً {employee?.employee_name}</Text><Text style={s.heroSub}>الرقم الوظيفي: {employee?.employee_number}</Text></View>
       <View style={s.card}><Text style={s.title}>الاستبيانات المتاحة</Text><Text style={s.sub}>اختر الاستبيان الذي ترغب في المشاركة فيه.</Text>
         {catalog.filter(x=>x.is_active).map(sv=><View key={sv.id} style={s.surveyCard}><Text style={s.surveyTitle}>{sv.survey_name}</Text><Text style={s.sub}>{sv.description||`${sv.questions?.length||0} سؤالاً`}</Text><Text style={s.status}>{dateOpen(sv.period)?"مفتوح للمشاركة":"مغلق حالياً"}</Text><Btn title="فتح الاستبيان" secondary={!dateOpen(sv.period)} onPress={()=>chooseSurvey(sv)}/></View>)}
+        <Btn title="العودة إلى خدمات النظام" secondary onPress={()=>setScreen("dashboard")}/>
         <Btn title="تسجيل الخروج" secondary onPress={logout}/>
       </View>
     </ScrollView>}

@@ -1,4 +1,4 @@
-name: Build Android APK - Employee Survey
+name: Build Android APK - HR System
 on:
   push:
     branches: [main, master]
@@ -13,34 +13,22 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: 20
+          cache: npm
       - name: Setup Java
         uses: actions/setup-java@v4
         with:
           distribution: temurin
-          java-version: "17"
+          java-version: '17'
       - name: Install dependencies
         run: npm install
-      - name: Expo prebuild
-        env:
-          CI: 1
-          NODE_ENV: production
+      - name: Generate Android project
         run: npx expo prebuild --platform android --non-interactive
-      - name: Configure signing
-        run: |
-          cd android/app
-          keytool -genkeypair -v -keystore release.keystore -alias releasekey -keyalg RSA -keysize 2048 -validity 10000 -storepass android -keypass android -dname "CN=EmployeeSurvey, OU=Dev, O=Company, L=Taiz, S=Taiz, C=YE"
-          sed -i '/signingConfigs {/a\        release {\n            storeFile file("release.keystore")\n            storePassword "android"\n            keyAlias "releasekey"\n            keyPassword "android"\n        }' build.gradle
-          sed -i 's/signingConfig signingConfigs.debug/signingConfig signingConfigs.release/g' build.gradle
       - name: Build APK
-        env:
-          NODE_ENV: production
-          GRADLE_OPTS: "-Dorg.gradle.jvmargs=-Xmx4096m -XX:MaxMetaspaceSize=1024m"
-        run: |
-          cd android
-          chmod +x gradlew
-          ./gradlew assembleRelease --no-daemon -Dorg.gradle.parallel=false
+        working-directory: android
+        run: ./gradlew assembleRelease
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
-          name: EmployeeSurvey-v1.1.0
+          name: hr-system-android-apk
           path: android/app/build/outputs/apk/release/app-release.apk
+          if-no-files-found: error

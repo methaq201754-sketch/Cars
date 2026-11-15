@@ -12,7 +12,7 @@
     "android": {
       "package": "com.company.employee.survey",
       "versionCode": 4,
-      "minSdkVersion": 21
+      "minSdkVersion": 22
     }
   }
 }

@@ -29,11 +29,29 @@ type Period = { survey_id:number; start_at:string|null; end_at:string|null; is_e
 type Survey = { id:number; survey_code:string; survey_name:string; description?:string; is_active:boolean; period:Period|null; questions:Question[] };
 type Employee = { employee_number:string; employee_name:string; is_survey_admin:boolean };
 type ResponseRow = { id:number; survey_id:number; employee_number:string; employee_name:string|null; department:string; job_grade:string; service_years:number; qualification:string; morale_reason:string|null; domain1_average:number|null; domain2_average:number|null; domain3_average:number|null; overall_average:number|null; submitted_at:string; answers?:any[] };
+type WorkflowData = { branches:any[]; employees:any[]; managers:any[]; branch_approvers:any[] };
 
 const avg = (a:number[]) => a.length ? a.reduce((x,y)=>x+y,0)/a.length : 0;
 const dateOpen = (p:Period|null) => !!p && p.is_enabled && (!p.start_at || new Date(p.start_at).getTime() <= Date.now()) && (!p.end_at || new Date(p.end_at).getTime() >= Date.now());
 const errText = (e:any) => e?.message || e?.details || "حدث خطأ غير متوقع.";
 const escapeCsv = (v:any) => `"${String(v ?? "").replace(/"/g,'""')}"`;
+const pick = (row:any, keys:string[], fallback:any="") => { for(const k of keys){ if(row?.[k]!==undefined && row?.[k]!==null) return row[k]; } return fallback; };
+const asArray = (v:any) => Array.isArray(v)?v:[];
+const normalizeWorkflowData = (raw:any):WorkflowData => {
+  let d=raw;
+  if(Array.isArray(d) && d.length===1 && d[0] && typeof d[0]==="object") d=d[0];
+  if(d?.data && typeof d.data==="object") d=d.data;
+  return {
+    branches:asArray(pick(d,["branches","workflow_branches","branch_list"])),
+    employees:asArray(pick(d,["employees","employee_list","staff"])),
+    managers:asArray(pick(d,["managers","manager_list","direct_managers"])),
+    branch_approvers:asArray(pick(d,["branch_approvers","approvers","branchApprovers"]))
+  };
+};
+const employeeNoOf = (r:any) => String(pick(r,["employee_number","manager_employee_number","approver_employee_number","assigned_employee_number","user_employee_number","number","employeeNo"]));
+const employeeNameOf = (r:any) => String(pick(r,["employee_name","manager_employee_name","approver_employee_name","assigned_employee_name","user_employee_name","display_name","name"],"موظف"));
+const branchCodeOf = (r:any) => String(pick(r,["branch_code","code"]));
+const branchNameOf = (r:any) => String(pick(r,["branch_name","name","branch"]));
 
 export default function App() {
   const [screen,setScreen] = useState<"login"|"dashboard"|"home"|"employee"|"survey"|"result"|"admin"|"workflow">("login");
@@ -59,15 +77,13 @@ export default function App() {
   const [periodStart,setPeriodStart] = useState("");
   const [periodEnd,setPeriodEnd] = useState("");
   const [periodEnabled,setPeriodEnabled] = useState(false);
-  const [workflowData,setWorkflowData] = useState<any>({branches:[],employees:[],managers:[],branch_approvers:[]});
-  const [workflowTab,setWorkflowTab] = useState<"employees"|"managers"|"approvers">("employees");
+  const [workflowData,setWorkflowData] = useState<WorkflowData>({branches:[],employees:[],managers:[],branch_approvers:[]});
   const [workflowSearch,setWorkflowSearch] = useState("");
-  const [managerSearch,setManagerSearch] = useState("");
-  const [selectedWorkflowEmployee,setSelectedWorkflowEmployee] = useState<any>(null);
-  const [selectedWorkflowManager,setSelectedWorkflowManager] = useState<any>(null);
-  const [selectedWorkflowBranch,setSelectedWorkflowBranch] = useState("NAQIL");
-  const [approverRole,setApproverRole] = useState<"SERVICES_ADMIN"|"REQUEST_AUDITOR">("SERVICES_ADMIN");
-  const [selectedApproverEmployee,setSelectedApproverEmployee] = useState<any>(null);
+  const [workflowSelectedEmployee,setWorkflowSelectedEmployee] = useState<any>(null);
+  const [workflowBranch,setWorkflowBranch] = useState("NAQIL");
+  const [workflowManager,setWorkflowManager] = useState("");
+  const [workflowApproverRole,setWorkflowApproverRole] = useState<"SERVICES_ADMIN"|"REQUEST_AUDITOR">("SERVICES_ADMIN");
+  const [workflowApproverEmployee,setWorkflowApproverEmployee] = useState("");
 
   const questions = selectedSurvey?.questions || [];
   const progress = useMemo(()=>questions.length ? Math.round(Object.keys(answers).length/questions.length*100) : 0,[answers,questions.length]);
@@ -179,68 +195,6 @@ export default function App() {
     });
     return ()=>{alive=false;subscription.unsubscribe();};
   },[]);
-
-  const loadWorkflowData = async () => {
-    if(!systemAdmin) throw new Error("هذه الشاشة متاحة لمدير النظام فقط.");
-    const {data,error}=await supabase.rpc("get_workflow_management_data");
-    if(error) throw error;
-    const parsed=typeof data==="string"?JSON.parse(data):data;
-    setWorkflowData({branches:parsed?.branches||[],employees:parsed?.employees||[],managers:parsed?.managers||[],branch_approvers:parsed?.branch_approvers||[]});
-  };
-
-  const openWorkflowManagement = async () => {
-    if(!systemAdmin){Alert.alert("غير مصرح","إدارة مسارات الموافقات متاحة لمدير النظام فقط.");return;}
-    setBusy(true);
-    try{await loadWorkflowData();setWorkflowTab("employees");setWorkflowSearch("");setManagerSearch("");setSelectedWorkflowEmployee(null);setSelectedWorkflowManager(null);setSelectedApproverEmployee(null);setScreen("workflow");}
-    catch(e:any){Alert.alert("تعذر تحميل إدارة مسارات الموافقات",errText(e));}
-    finally{setBusy(false);}
-  };
-
-  const saveManagerRole = async (emp:any,enabled:boolean) => {
-    if(!emp?.employee_number) return;
-    setBusy(true);
-    try{
-      const {error}=await supabase.rpc("set_workflow_manager_role",{p_employee_number:String(emp.employee_number),p_is_manager:enabled});
-      if(error) throw error;
-      await loadWorkflowData();
-      Alert.alert("تم الحفظ",enabled?"تمت إضافة الموظف إلى قائمة المديرين المباشرين.":"تمت إزالة صلاحية المدير المباشر.");
-    }catch(e:any){Alert.alert("تعذر تحديث المديرين",errText(e));}
-    finally{setBusy(false);}
-  };
-
-  const saveEmployeeWorkflowAssignment = async () => {
-    if(!selectedWorkflowEmployee){Alert.alert("اختر الموظف","حدد الموظف المراد تعيين مسار موافقاته.");return;}
-    if(!selectedWorkflowBranch){Alert.alert("اختر الفرع","حدد فرع الموظف.");return;}
-    setBusy(true);
-    try{
-      const {error}=await supabase.rpc("set_employee_workflow_assignment",{
-        p_employee_number:String(selectedWorkflowEmployee.employee_number),
-        p_branch_code:selectedWorkflowBranch,
-        p_manager_employee_number:selectedWorkflowManager?.employee_number?String(selectedWorkflowManager.employee_number):null
-      });
-      if(error) throw error;
-      await loadWorkflowData();
-      Alert.alert("تم الحفظ","تم تحديث فرع الموظف ومديره المباشر.");
-      setSelectedWorkflowEmployee(null);setSelectedWorkflowManager(null);setWorkflowSearch("");
-    }catch(e:any){Alert.alert("تعذر حفظ التعيين",errText(e));}
-    finally{setBusy(false);}
-  };
-
-  const saveBranchApprover = async () => {
-    if(!selectedApproverEmployee){Alert.alert("اختر الموظف","حدد الموظف المسؤول عن هذا الدور.");return;}
-    setBusy(true);
-    try{
-      const {error}=await supabase.rpc("set_workflow_branch_approver",{
-        p_branch_code:selectedWorkflowBranch,p_role_code:approverRole,
-        p_employee_number:String(selectedApproverEmployee.employee_number)
-      });
-      if(error) throw error;
-      await loadWorkflowData();
-      Alert.alert("تم الحفظ","تم تحديث مسؤول الفرع بنجاح.");
-      setSelectedApproverEmployee(null);setManagerSearch("");
-    }catch(e:any){Alert.alert("تعذر تحديث مسؤول الفرع",errText(e));}
-    finally{setBusy(false);}
-  };
 
   const loadAdmin = async (surveyId:number, empNo=employee?.employee_number) => {
     if(!empNo) return;
@@ -355,6 +309,73 @@ export default function App() {
     try{const f=await Print.printToFileAsync({html:doc}); if(await Sharing.isAvailableAsync()) await Sharing.shareAsync(f.uri,{mimeType:"application/pdf",dialogTitle:"تصدير تقرير PDF"}); else Alert.alert("تم إنشاء PDF",f.uri);}catch(e:any){Alert.alert("تعذر تصدير PDF",errText(e));}
   };
 
+  const loadWorkflowManagementData = async () => {
+    if(!systemAdmin) throw new Error("هذه الشاشة متاحة لمدير النظام فقط.");
+    const {data,error}=await supabase.rpc("get_workflow_management_data");
+    if(error) throw error;
+    const normalized=normalizeWorkflowData(data);
+    if(!normalized.branches.length || !normalized.employees.length)
+      throw new Error("تم الاتصال بدالة الإدارة، لكن بنية البيانات المستلمة غير مكتملة. يلزم مراجعة نتيجة الدالة قبل اعتماد الشاشة.");
+    setWorkflowData(normalized);
+    if(!workflowBranch && normalized.branches.length) setWorkflowBranch(branchCodeOf(normalized.branches[0]));
+    return normalized;
+  };
+
+  const openWorkflowManagement = async () => {
+    if(!systemAdmin){Alert.alert("غير مصرح","إدارة مسارات الموافقات متاحة لمدير النظام فقط.");return;}
+    setBusy(true);
+    try{await loadWorkflowManagementData();setWorkflowSearch("");setWorkflowSelectedEmployee(null);setScreen("workflow");}
+    catch(e:any){Alert.alert("تعذر تحميل إدارة الموافقات",errText(e));}
+    finally{setBusy(false);}
+  };
+
+  const saveEmployeeWorkflowAssignment = async () => {
+    if(!workflowSelectedEmployee){Alert.alert("اختر الموظف","حدد الموظف المراد تعيين مدير مباشر له.");return;}
+    if(!workflowBranch || !workflowManager){Alert.alert("بيانات ناقصة","حدد الفرع والمدير المباشر.");return;}
+    setBusy(true);
+    try{
+      const {error}=await supabase.rpc("set_employee_workflow_assignment",{
+        p_employee_number:employeeNoOf(workflowSelectedEmployee),p_branch_code:workflowBranch,p_manager_employee_number:workflowManager
+      });
+      if(error) throw error;
+      await loadWorkflowManagementData();
+      Alert.alert("تم الحفظ","تم تحديث الفرع والمدير المباشر للموظف.");
+    }catch(e:any){Alert.alert("تعذر حفظ التعيين",errText(e));}
+    finally{setBusy(false);}
+  };
+
+  const changeManagerRole = async (person:any, enabled:boolean) => {
+    const no=employeeNoOf(person); if(!no) return;
+    setBusy(true);
+    try{
+      const {error}=await supabase.rpc("set_workflow_manager_role",{p_employee_number:no,p_is_manager:enabled});
+      if(error) throw error;
+      await loadWorkflowManagementData();
+      Alert.alert("تم التحديث",enabled?"تمت إضافة صلاحية المدير المباشر.":"تمت إزالة صلاحية المدير المباشر.");
+    }catch(e:any){Alert.alert("تعذر تحديث المديرين",errText(e));}
+    finally{setBusy(false);}
+  };
+
+  const saveBranchApprover = async () => {
+    if(!workflowBranch || !workflowApproverEmployee){Alert.alert("بيانات ناقصة","حدد الفرع والموظف.");return;}
+    setBusy(true);
+    try{
+      const {error}=await supabase.rpc("set_workflow_branch_approver",{
+        p_branch_code:workflowBranch,p_role_code:workflowApproverRole,p_employee_number:workflowApproverEmployee
+      });
+      if(error) throw error;
+      await loadWorkflowManagementData();
+      Alert.alert("تم الحفظ","تم تحديث مسؤول المرحلة للفرع المحدد.");
+    }catch(e:any){Alert.alert("تعذر تعيين المسؤول",errText(e));}
+    finally{setBusy(false);}
+  };
+
+  const filteredWorkflowEmployees=workflowData.employees.filter((r:any)=>{
+    const q=workflowSearch.trim().toLowerCase();
+    return !q || employeeNoOf(r).toLowerCase().includes(q) || employeeNameOf(r).toLowerCase().includes(q);
+  }).slice(0,35);
+  const managerNumbers=new Set(workflowData.managers.map((r:any)=>employeeNoOf(r)));
+
   const reset = () => {setScreen("home");setSelectedSurvey(null);setAnswers({});setReason("");setResult(null);};
   const logout = async () => {await supabase.auth.signOut();setEmployee(null);setEmployeeNo("");setPassword("");setCatalog([]);setSelectedSurvey(null);setAdminRows([]);setRoleCodes([]);setPermissions({});setSystemAdmin(false);setScreen("login");};
 
@@ -373,56 +394,14 @@ export default function App() {
       <View style={s.hero}><Text style={s.heroTitle}>مرحباً {employee?.employee_name}</Text><Text style={s.heroSub}>الرقم الوظيفي: {employee?.employee_number}</Text></View>
       <View style={s.card}><Text style={s.title}>خدمات النظام</Text><Text style={s.sub}>تظهر الوحدات وفق الصلاحيات الممنوحة لحسابك.</Text>
         {(systemAdmin||permissions.EMPLOYEES_VIEW)&&<View style={s.surveyCard}><Text style={s.surveyTitle}>ملف الموظفين</Text><Text style={s.sub}>إدارة بيانات الموظفين والأقسام والدرجات والمؤهلات.</Text><Text style={s.status}>واجهة الوحدة ضمن مراحل التجهيز</Text></View>}
-        {systemAdmin&&<View style={s.surveyCard}><Text style={s.surveyTitle}>إدارة مسارات الموافقات</Text><Text style={s.sub}>تعيين المدير المباشر لكل موظف، وإدارة قائمة المديرين، وتحديد مسؤولي الخدمات والمراجعة لكل فرع.</Text><Btn title="فتح إدارة مسارات الموافقات" onPress={openWorkflowManagement}/></View>}
         {(systemAdmin||permissions.SURVEYS_VIEW||permissions.SURVEYS_MANAGE)&&<View style={s.surveyCard}><Text style={s.surveyTitle}>الاستبيانات</Text><Text style={s.sub}>استبيان رضا الموظفين وتقييم الخدمات، مع إدارة الفترات والنتائج للمخولين.</Text><Btn title="فتح وحدة الاستبيانات" onPress={async()=>{setBusy(true);try{await loadCatalog();setScreen(employee?.is_survey_admin?"admin":"home");if(employee?.is_survey_admin) await loadAdmin(adminSurveyId,employee?.employee_number);}catch(e:any){Alert.alert("تعذر تحميل الاستبيانات",errText(e));}finally{setBusy(false);}}}/></View>}
         {(systemAdmin||permissions.ASSETS_VIEW)&&<View style={s.surveyCard}><Text style={s.surveyTitle}>الأصول والعهد</Text><Text style={s.status}>قاعدة البيانات مجهزة — واجهات التطبيق في مرحلة التجهيز</Text></View>}
         {(systemAdmin||permissions.GRIEVANCES_VIEW||permissions.GRIEVANCES_CREATE)&&<View style={s.surveyCard}><Text style={s.surveyTitle}>الشكاوى والتظلمات والتحقيقات</Text><Text style={s.status}>قاعدة البيانات مجهزة — واجهات التطبيق في مرحلة التجهيز</Text></View>}
         {(systemAdmin||permissions.IDEAS_VIEW||permissions.IDEAS_CREATE)&&<View style={s.surveyCard}><Text style={s.surveyTitle}>الأفكار والمقترحات</Text><Text style={s.status}>قاعدة البيانات مجهزة — واجهات التطبيق في مرحلة التجهيز</Text></View>}
         {(systemAdmin||permissions.SERVICES_VIEW||permissions.SERVICES_CREATE)&&<View style={s.surveyCard}><Text style={s.surveyTitle}>الخدمات الإدارية والتصاريح</Text><Text style={s.status}>قاعدة البيانات مجهزة — واجهات التطبيق في مرحلة التجهيز</Text></View>}
         {(systemAdmin||permissions.REPORTS_VIEW)&&<View style={s.surveyCard}><Text style={s.surveyTitle}>التقارير ومؤشرات الأداء</Text><Text style={s.status}>قاعدة البيانات مجهزة — واجهات التطبيق في مرحلة التجهيز</Text></View>}
+        {systemAdmin&&<View style={s.surveyCard}><Text style={s.surveyTitle}>إدارة مسارات الموافقات</Text><Text style={s.sub}>تعيين المدير المباشر لكل موظف، وإدارة المديرين، وتحديد مسؤولي الخدمات والمراجعة حسب الفرع.</Text><Btn title="فتح إدارة مسارات الموافقات" onPress={openWorkflowManagement}/></View>}
         <Btn title="تسجيل الخروج" secondary onPress={logout}/>
-      </View>
-    </ScrollView>}
-
-    {screen==="workflow" && systemAdmin && <ScrollView contentContainerStyle={s.container} keyboardShouldPersistTaps="handled">
-      <View style={s.hero}><Text style={s.heroTitle}>إدارة مسارات الموافقات</Text><Text style={s.heroSub}>الموظف ← المدير المباشر ← الخدمات الإدارية ← المراجعة</Text></View>
-      <View style={s.card}>
-        <View style={s.chips}>
-          <Pressable onPress={()=>{setWorkflowTab("employees");setSelectedWorkflowEmployee(null);}} style={[s.chip,workflowTab==="employees"&&s.chipActive]}><Text style={[s.chipText,workflowTab==="employees"&&s.white]}>توزيع الموظفين</Text></Pressable>
-          <Pressable onPress={()=>{setWorkflowTab("managers");setSelectedWorkflowEmployee(null);}} style={[s.chip,workflowTab==="managers"&&s.chipActive]}><Text style={[s.chipText,workflowTab==="managers"&&s.white]}>إدارة المديرين</Text></Pressable>
-          <Pressable onPress={()=>{setWorkflowTab("approvers");setSelectedApproverEmployee(null);}} style={[s.chip,workflowTab==="approvers"&&s.chipActive]}><Text style={[s.chipText,workflowTab==="approvers"&&s.white]}>مسؤولو الفروع</Text></Pressable>
-        </View>
-        {workflowTab==="employees" && <>
-          <Text style={s.sectionTitle}>تعيين فرع ومدير مباشر للموظف</Text>
-          <Field label="بحث برقم الموظف أو الاسم" value={workflowSearch} onChangeText={setWorkflowSearch} placeholder="اكتب الرقم أو الاسم"/>
-          {workflowData.employees.filter((x:any)=>!workflowSearch.trim()||String(x.employee_number||"").includes(workflowSearch.trim())||String(x.employee_name||"").includes(workflowSearch.trim())).slice(0,35).map((x:any)=><Pressable key={x.employee_number} onPress={()=>{setSelectedWorkflowEmployee(x);setSelectedWorkflowBranch(x.branch_code||"NAQIL");setSelectedWorkflowManager(null);}} style={[s.responseCard,selectedWorkflowEmployee?.employee_number===x.employee_number&&s.selectedCard]}><Text style={s.responseTitle}>{x.employee_name} — {x.employee_number}</Text><Text style={s.smallMuted}>الفرع: {x.branch_name||"غير محدد"} | المدير: {x.manager_name||"غير معين"}</Text></Pressable>)}
-          {selectedWorkflowEmployee&&<View style={s.innerPanel}><Text style={s.surveyTitle}>الموظف المحدد: {selectedWorkflowEmployee.employee_name}</Text>
-            <Text style={s.label}>فرع الموظف</Text><View style={s.chips}>{workflowData.branches.map((b:any)=><Pressable key={b.branch_code} onPress={()=>setSelectedWorkflowBranch(b.branch_code)} style={[s.chip,selectedWorkflowBranch===b.branch_code&&s.chipActive]}><Text style={[s.chipText,selectedWorkflowBranch===b.branch_code&&s.white]}>{b.branch_name}</Text></Pressable>)}</View>
-            <Text style={s.label}>المدير المباشر</Text><View style={s.chips}><Pressable onPress={()=>setSelectedWorkflowManager(null)} style={[s.chip,!selectedWorkflowManager&&s.chipActive]}><Text style={[s.chipText,!selectedWorkflowManager&&s.white]}>بدون تعيين</Text></Pressable></View>
-            <Field label="بحث عن المدير" value={managerSearch} onChangeText={setManagerSearch} placeholder="رقم المدير أو اسمه"/>
-            {workflowData.managers.filter((m:any)=>String(m.employee_number)!==String(selectedWorkflowEmployee.employee_number)&&(!managerSearch.trim()||String(m.employee_number||"").includes(managerSearch.trim())||String(m.employee_name||"").includes(managerSearch.trim()))).slice(0,25).map((m:any)=><Pressable key={m.employee_number} onPress={()=>setSelectedWorkflowManager(m)} style={[s.responseCard,selectedWorkflowManager?.employee_number===m.employee_number&&s.selectedCard]}><Text style={s.responseTitle}>{m.employee_name} — {m.employee_number}</Text></Pressable>)}
-            <Text style={s.sub}>المدير المختار: {selectedWorkflowManager?`${selectedWorkflowManager.employee_name} (${selectedWorkflowManager.employee_number})`:"بدون مدير"}</Text>
-            <Btn title="حفظ تعيين الموظف" disabled={busy} onPress={saveEmployeeWorkflowAssignment}/>
-          </View>}
-        </>}
-        {workflowTab==="managers" && <>
-          <Text style={s.sectionTitle}>إضافة أو إزالة المديرين المباشرين</Text>
-          <Text style={s.sub}>إضافة الموظف هنا تمنحه دور المدير المباشر ليظهر في قائمة تعيين المديرين. إزالة الدور لا تتم إذا كان لديه موظفون مرتبطون بتعيين فعال.</Text>
-          <Field label="بحث برقم الموظف أو الاسم" value={workflowSearch} onChangeText={setWorkflowSearch} placeholder="اكتب الرقم أو الاسم"/>
-          {workflowData.employees.filter((x:any)=>!workflowSearch.trim()||String(x.employee_number||"").includes(workflowSearch.trim())||String(x.employee_name||"").includes(workflowSearch.trim())).slice(0,50).map((x:any)=>{const active=workflowData.managers.some((m:any)=>String(m.employee_number)===String(x.employee_number));return <View key={x.employee_number} style={s.responseCard}><Text style={s.responseTitle}>{x.employee_name} — {x.employee_number}</Text><Text style={s.smallMuted}>{active?"مدير مباشر حالياً":"ليس ضمن المديرين"}</Text><Btn title={active?"إزالة دور المدير":"إضافة كمدير مباشر"} secondary={!active} disabled={busy} onPress={()=>saveManagerRole(x,!active)}/></View>;})}
-        </>}
-        {workflowTab==="approvers" && <>
-          <Text style={s.sectionTitle}>تحديد مسؤولي كل فرع</Text>
-          <Text style={s.label}>الفرع</Text><View style={s.chips}>{workflowData.branches.map((b:any)=><Pressable key={b.branch_code} onPress={()=>setSelectedWorkflowBranch(b.branch_code)} style={[s.chip,selectedWorkflowBranch===b.branch_code&&s.chipActive]}><Text style={[s.chipText,selectedWorkflowBranch===b.branch_code&&s.white]}>{b.branch_name}</Text></Pressable>)}</View>
-          <Text style={s.label}>الدور</Text><View style={s.chips}><Pressable onPress={()=>setApproverRole("SERVICES_ADMIN")} style={[s.chip,approverRole==="SERVICES_ADMIN"&&s.chipActive]}><Text style={[s.chipText,approverRole==="SERVICES_ADMIN"&&s.white]}>الخدمات الإدارية</Text></Pressable><Pressable onPress={()=>setApproverRole("REQUEST_AUDITOR")} style={[s.chip,approverRole==="REQUEST_AUDITOR"&&s.chipActive]}><Text style={[s.chipText,approverRole==="REQUEST_AUDITOR"&&s.white]}>مراجعة الطلبات</Text></Pressable></View>
-          {workflowData.branch_approvers.filter((a:any)=>a.branch_code===selectedWorkflowBranch&&a.role_code===approverRole).map((a:any)=><Text key={a.id||a.employee_number} style={s.sub}>المسؤول الحالي: {a.employee_name} — {a.employee_number}</Text>)}
-          <Field label="بحث عن الموظف المسؤول" value={managerSearch} onChangeText={setManagerSearch} placeholder="رقم الموظف أو الاسم"/>
-          {workflowData.employees.filter((x:any)=>!managerSearch.trim()||String(x.employee_number||"").includes(managerSearch.trim())||String(x.employee_name||"").includes(managerSearch.trim())).slice(0,40).map((x:any)=><Pressable key={x.employee_number} onPress={()=>setSelectedApproverEmployee(x)} style={[s.responseCard,selectedApproverEmployee?.employee_number===x.employee_number&&s.selectedCard]}><Text style={s.responseTitle}>{x.employee_name} — {x.employee_number}</Text></Pressable>)}
-          <Text style={s.sub}>الموظف المحدد: {selectedApproverEmployee?`${selectedApproverEmployee.employee_name} (${selectedApproverEmployee.employee_number})`:"لم يتم الاختيار"}</Text>
-          <Btn title="حفظ مسؤول الفرع" disabled={busy||!selectedApproverEmployee} onPress={saveBranchApprover}/>
-        </>}
-        <Btn title="تحديث البيانات" secondary disabled={busy} onPress={loadWorkflowData}/>
-        <Btn title="العودة إلى لوحة النظام" secondary onPress={()=>setScreen("dashboard")}/>
       </View>
     </ScrollView>}
 
@@ -489,6 +468,39 @@ export default function App() {
       </View>
       <Btn title="تسجيل الخروج" secondary onPress={logout}/>
     </ScrollView>}
+    {screen==="workflow" && systemAdmin && <ScrollView contentContainerStyle={s.container}>
+      <View style={s.hero}><Text style={s.heroTitle}>إدارة مسارات الموافقات</Text><Text style={s.heroSub}>إعداد المدير المباشر ومسؤولي الخدمات والمراجعة حسب الفرع</Text></View>
+      <View style={s.card}><Text style={s.title}>1. تعيين المدير المباشر للموظف</Text><Text style={s.sub}>ابحث بالاسم أو الرقم الوظيفي، ثم حدد الفرع والمدير المباشر. يعرض النظام أول 35 نتيجة مطابقة.</Text>
+        <Field label="البحث عن الموظف" value={workflowSearch} onChangeText={setWorkflowSearch} placeholder="الاسم أو الرقم الوظيفي"/>
+        {filteredWorkflowEmployees.map((r:any)=>{
+          const no=employeeNoOf(r); const selected=employeeNoOf(workflowSelectedEmployee)===no;
+          const currentManager=String(pick(r,["manager_employee_number","manager_number"],""));
+          const currentBranch=String(pick(r,["branch_code"],""));
+          return <Pressable key={no} onPress={()=>{setWorkflowSelectedEmployee(r);setWorkflowManager(currentManager);if(currentBranch)setWorkflowBranch(currentBranch);}} style={[s.responseCard,selected&&{borderColor:C.primary,backgroundColor:C.pale}]}><Text style={s.responseTitle}>{employeeNameOf(r)} — {no}</Text><Text style={s.smallMuted}>الفرع: {String(pick(r,["branch_name"],"غير محدد"))} | المدير الحالي: {currentManager||"غير معين"}</Text></Pressable>;
+        })}
+        {workflowSelectedEmployee&&<View style={s.selectedPanel}><Text style={s.label}>الموظف المحدد: {employeeNameOf(workflowSelectedEmployee)} ({employeeNoOf(workflowSelectedEmployee)})</Text>
+          <Text style={s.label}>الفرع</Text><View style={s.chips}>{workflowData.branches.map((b:any)=><Pressable key={branchCodeOf(b)} onPress={()=>setWorkflowBranch(branchCodeOf(b))} style={[s.chip,workflowBranch===branchCodeOf(b)&&s.chipActive]}><Text style={[s.chipText,workflowBranch===branchCodeOf(b)&&s.white]}>{branchNameOf(b)}</Text></Pressable>)}</View>
+          <Text style={s.label}>المدير المباشر</Text><View style={s.chips}>{workflowData.managers.map((m:any)=><Pressable key={employeeNoOf(m)} onPress={()=>setWorkflowManager(employeeNoOf(m))} style={[s.chip,workflowManager===employeeNoOf(m)&&s.chipActive]}><Text style={[s.chipText,workflowManager===employeeNoOf(m)&&s.white]}>{employeeNameOf(m)} ({employeeNoOf(m)})</Text></Pressable>)}</View>
+          <Btn title="حفظ تعيين الموظف" disabled={busy} onPress={saveEmployeeWorkflowAssignment}/>
+        </View>}
+      </View>
+      <View style={s.card}><Text style={s.title}>2. إدارة المديرين المباشرين</Text><Text style={s.sub}>اختر موظفاً من نتائج البحث أعلاه ثم أضف أو أزل عنه دور المدير المباشر. لا يمكن إزالة مدير لديه موظفون مرتبطون بتعيين نشط.</Text>
+        {workflowSelectedEmployee&&<><Text style={s.body}>{employeeNameOf(workflowSelectedEmployee)} — {employeeNoOf(workflowSelectedEmployee)}</Text><Text style={s.status}>{managerNumbers.has(employeeNoOf(workflowSelectedEmployee))?"لديه حالياً دور مدير مباشر":"ليس لديه دور مدير مباشر"}</Text><Btn title={managerNumbers.has(employeeNoOf(workflowSelectedEmployee))?"إزالة دور المدير المباشر":"إضافة دور المدير المباشر"} secondary={!managerNumbers.has(employeeNoOf(workflowSelectedEmployee))} disabled={busy} onPress={()=>changeManagerRole(workflowSelectedEmployee,!managerNumbers.has(employeeNoOf(workflowSelectedEmployee)))}/></>}
+        <Text style={s.sectionTitle}>المديرون المعتمدون حالياً</Text>
+        {workflowData.managers.map((m:any)=><View key={employeeNoOf(m)} style={s.responseCard}><Text style={s.responseTitle}>{employeeNameOf(m)} — {employeeNoOf(m)}</Text></View>)}
+      </View>
+      <View style={s.card}><Text style={s.title}>3. مسؤولو الخدمات والمراجعة حسب الفرع</Text><Text style={s.sub}>تغيير مسؤول المرحلة لا يغيّر تسلسل الموافقات: المدير المباشر ← الخدمات الإدارية ← المراجعة.</Text>
+        <Text style={s.label}>الفرع</Text><View style={s.chips}>{workflowData.branches.map((b:any)=><Pressable key={branchCodeOf(b)} onPress={()=>setWorkflowBranch(branchCodeOf(b))} style={[s.chip,workflowBranch===branchCodeOf(b)&&s.chipActive]}><Text style={[s.chipText,workflowBranch===branchCodeOf(b)&&s.white]}>{branchNameOf(b)}</Text></Pressable>)}</View>
+        <Text style={s.label}>مرحلة الموافقة</Text><View style={s.chips}><Pressable onPress={()=>setWorkflowApproverRole("SERVICES_ADMIN")} style={[s.chip,workflowApproverRole==="SERVICES_ADMIN"&&s.chipActive]}><Text style={[s.chipText,workflowApproverRole==="SERVICES_ADMIN"&&s.white]}>الخدمات الإدارية</Text></Pressable><Pressable onPress={()=>setWorkflowApproverRole("REQUEST_AUDITOR")} style={[s.chip,workflowApproverRole==="REQUEST_AUDITOR"&&s.chipActive]}><Text style={[s.chipText,workflowApproverRole==="REQUEST_AUDITOR"&&s.white]}>المراجعة</Text></Pressable></View>
+        <Text style={s.label}>الموظف المسؤول الجديد</Text><Field label="الرقم الوظيفي للمسؤول" value={workflowApproverEmployee} onChangeText={setWorkflowApproverEmployee} keyboardType="numeric" placeholder="أدخل الرقم الوظيفي"/>
+        {workflowSelectedEmployee&&<Btn title={`استخدام الموظف المحدد: ${employeeNameOf(workflowSelectedEmployee)}`} secondary onPress={()=>setWorkflowApproverEmployee(employeeNoOf(workflowSelectedEmployee))}/>}
+        <Btn title="حفظ مسؤول المرحلة" disabled={busy} onPress={saveBranchApprover}/>
+        <Text style={s.sectionTitle}>التعيينات الحالية</Text>
+        {workflowData.branch_approvers.map((a:any,i:number)=><View key={String(pick(a,["id"],i))} style={s.responseCard}><Text style={s.responseTitle}>{String(pick(a,["branch_name","branch_code"],"فرع"))} — {pick(a,["role_code"],"")==="SERVICES_ADMIN"?"الخدمات الإدارية":"المراجعة"}</Text><Text style={s.smallMuted}>{employeeNameOf(a)} — {employeeNoOf(a)}</Text></View>)}
+      </View>
+      <Btn title="تحديث البيانات" secondary disabled={busy} onPress={async()=>{setBusy(true);try{await loadWorkflowManagementData();}catch(e:any){Alert.alert("تعذر التحديث",errText(e));}finally{setBusy(false);}}}/>
+      <Btn title="العودة إلى خدمات النظام" secondary onPress={()=>setScreen("dashboard")}/>
+    </ScrollView>}
     {busy && <View pointerEvents="none" style={s.loading}><ActivityIndicator color={C.primary}/></View>}
   </SafeAreaView>;
 }
@@ -503,5 +515,5 @@ function AverageBar({title,value}:{title:string;value:number}){const v=Math.max(
 
 const s=StyleSheet.create({
  safe:{flex:1,backgroundColor:C.bg},container:{padding:16,paddingBottom:40},hero:{backgroundColor:C.primary,borderRadius:18,padding:22,marginBottom:16},heroTitle:{color:"#fff",fontSize:24,fontWeight:"800",textAlign:"right"},heroSub:{color:"#fff",fontSize:13,textAlign:"right",marginTop:8,lineHeight:21},
- card:{backgroundColor:"#fff",borderRadius:16,padding:17,marginBottom:15,borderWidth:1,borderColor:"#E7EAF0"},title:{fontSize:21,fontWeight:"800",color:C.text,textAlign:"right"},sub:{fontSize:12,color:C.muted,textAlign:"right",marginTop:5,marginBottom:12,lineHeight:20},body:{fontSize:15,color:C.text,textAlign:"right",lineHeight:25,marginVertical:12},field:{marginBottom:14},label:{fontSize:13,fontWeight:"700",color:C.text,textAlign:"right",marginBottom:7},input:{borderWidth:1,borderColor:C.border,borderRadius:10,backgroundColor:"#fff",padding:11,fontSize:14,color:C.text,minHeight:44},readonly:{marginBottom:13,alignItems:"flex-end"},readonlyText:{fontSize:15,color:C.dark,fontWeight:"700"},chips:{flexDirection:"row",flexWrap:"wrap",justifyContent:"flex-end",gap:7},chip:{borderWidth:1,borderColor:C.border,borderRadius:9,padding:9,backgroundColor:"#fff"},chipActive:{backgroundColor:C.primary,borderColor:C.primary},chipText:{fontSize:12,color:C.text},white:{color:"#fff"},btn:{backgroundColor:C.primary,borderRadius:10,paddingVertical:13,alignItems:"center",marginTop:8},btnText:{color:"#fff",fontWeight:"800",fontSize:14},btn2:{backgroundColor:"#fff",borderWidth:1,borderColor:C.border},btnText2:{color:C.dark},surveyCard:{borderWidth:1,borderColor:C.border,borderRadius:12,padding:13,marginTop:12},innerPanel:{backgroundColor:C.bg,borderRadius:12,padding:12,marginTop:12},selectedCard:{borderColor:C.primary,borderWidth:2,backgroundColor:C.pale},surveyTitle:{fontSize:16,fontWeight:"800",color:C.dark,textAlign:"right"},status:{fontSize:12,color:C.muted,textAlign:"right"},progress:{height:8,backgroundColor:"#E4E8ED",borderRadius:8,overflow:"hidden",marginTop:8},fill:{height:"100%",backgroundColor:C.primary},domain:{fontSize:17,fontWeight:"800",color:C.dark,textAlign:"right",marginVertical:10},qcard:{backgroundColor:"#fff",borderRadius:13,padding:14,marginBottom:11,borderWidth:1,borderColor:"#E7EAF0"},qno:{fontSize:12,fontWeight:"800",color:C.primary,textAlign:"right",marginBottom:6},question:{fontSize:14,fontWeight:"700",color:C.text,textAlign:"right",lineHeight:23,marginBottom:11},scale:{flexDirection:"row",flexWrap:"wrap",justifyContent:"flex-end",gap:6},scaleItem:{width:57,minHeight:60,borderWidth:1,borderColor:C.border,borderRadius:8,padding:5,alignItems:"center",justifyContent:"center"},active:{backgroundColor:C.primary,borderColor:C.primary},val:{fontSize:16,fontWeight:"800",color:C.dark},lbl:{fontSize:9,color:C.muted,textAlign:"center",marginTop:3},done:{alignSelf:"center",width:62,height:62,borderRadius:31,backgroundColor:"#E8F6EE",color:C.success,fontSize:42,fontWeight:"800",textAlign:"center",lineHeight:60,marginBottom:12},score:{flexDirection:"row-reverse",justifyContent:"space-between",padding:12,borderBottomWidth:1,borderBottomColor:"#EDF0F3"},scoreTitle:{color:C.text,fontSize:13},scoreVal:{fontWeight:"800",color:C.dark},total:{backgroundColor:C.pale,borderBottomWidth:0,marginTop:5,borderRadius:8},sectionTitle:{fontSize:16,fontWeight:"800",color:C.dark,textAlign:"right",marginTop:20,marginBottom:10},barWrap:{marginBottom:12},barHead:{flexDirection:"row-reverse",justifyContent:"space-between",marginBottom:5},barTitle:{fontSize:12,color:C.text,fontWeight:"700"},barValue:{fontSize:12,color:C.dark,fontWeight:"800"},barTrack:{height:10,backgroundColor:"#E8EBEF",borderRadius:8,overflow:"hidden"},barFill:{height:"100%",backgroundColor:C.primary,borderRadius:8},metrics:{flexDirection:"row",gap:10},metric:{flex:1,backgroundColor:C.pale,padding:13,borderRadius:10,alignItems:"center",marginBottom:10},metricValue:{fontSize:21,fontWeight:"800",color:C.dark},metricTitle:{fontSize:11,color:C.muted,marginTop:5},toggle:{flexDirection:"row-reverse",justifyContent:"space-between",alignItems:"center",padding:12,backgroundColor:C.bg,borderRadius:9},toggleValue:{fontWeight:"800",color:C.dark},exportRow:{flexDirection:"row-reverse",gap:8,marginBottom:12},exportBtn:{flex:1,padding:12,backgroundColor:C.pale,borderRadius:9,alignItems:"center"},exportText:{fontSize:12,fontWeight:"800",color:C.dark},responseCard:{borderWidth:1,borderColor:C.border,borderRadius:10,padding:12,marginTop:9},responseTitle:{fontWeight:"800",color:C.dark,textAlign:"right"},smallMuted:{fontSize:10,color:C.muted,textAlign:"right"},answerList:{borderTopWidth:1,borderTopColor:C.border,marginTop:10,paddingTop:7},answerLine:{paddingVertical:7,borderBottomWidth:1,borderBottomColor:"#F0F1F3"},answerText:{fontSize:12,color:C.text,textAlign:"right",lineHeight:19},answerValue:{fontSize:12,color:C.dark,fontWeight:"800",textAlign:"left",marginTop:3},empty:{textAlign:"center",color:C.muted,padding:15},loading:{position:"absolute",top:8,right:8,backgroundColor:"#fff",padding:7,borderRadius:20}
+ card:{backgroundColor:"#fff",borderRadius:16,padding:17,marginBottom:15,borderWidth:1,borderColor:"#E7EAF0"},title:{fontSize:21,fontWeight:"800",color:C.text,textAlign:"right"},sub:{fontSize:12,color:C.muted,textAlign:"right",marginTop:5,marginBottom:12,lineHeight:20},body:{fontSize:15,color:C.text,textAlign:"right",lineHeight:25,marginVertical:12},field:{marginBottom:14},label:{fontSize:13,fontWeight:"700",color:C.text,textAlign:"right",marginBottom:7},input:{borderWidth:1,borderColor:C.border,borderRadius:10,backgroundColor:"#fff",padding:11,fontSize:14,color:C.text,minHeight:44},readonly:{marginBottom:13,alignItems:"flex-end"},readonlyText:{fontSize:15,color:C.dark,fontWeight:"700"},chips:{flexDirection:"row",flexWrap:"wrap",justifyContent:"flex-end",gap:7},chip:{borderWidth:1,borderColor:C.border,borderRadius:9,padding:9,backgroundColor:"#fff"},chipActive:{backgroundColor:C.primary,borderColor:C.primary},chipText:{fontSize:12,color:C.text},white:{color:"#fff"},btn:{backgroundColor:C.primary,borderRadius:10,paddingVertical:13,alignItems:"center",marginTop:8},btnText:{color:"#fff",fontWeight:"800",fontSize:14},btn2:{backgroundColor:"#fff",borderWidth:1,borderColor:C.border},btnText2:{color:C.dark},surveyCard:{borderWidth:1,borderColor:C.border,borderRadius:12,padding:13,marginTop:12},surveyTitle:{fontSize:16,fontWeight:"800",color:C.dark,textAlign:"right"},status:{fontSize:12,color:C.muted,textAlign:"right"},progress:{height:8,backgroundColor:"#E4E8ED",borderRadius:8,overflow:"hidden",marginTop:8},fill:{height:"100%",backgroundColor:C.primary},domain:{fontSize:17,fontWeight:"800",color:C.dark,textAlign:"right",marginVertical:10},qcard:{backgroundColor:"#fff",borderRadius:13,padding:14,marginBottom:11,borderWidth:1,borderColor:"#E7EAF0"},qno:{fontSize:12,fontWeight:"800",color:C.primary,textAlign:"right",marginBottom:6},question:{fontSize:14,fontWeight:"700",color:C.text,textAlign:"right",lineHeight:23,marginBottom:11},scale:{flexDirection:"row",flexWrap:"wrap",justifyContent:"flex-end",gap:6},scaleItem:{width:57,minHeight:60,borderWidth:1,borderColor:C.border,borderRadius:8,padding:5,alignItems:"center",justifyContent:"center"},active:{backgroundColor:C.primary,borderColor:C.primary},val:{fontSize:16,fontWeight:"800",color:C.dark},lbl:{fontSize:9,color:C.muted,textAlign:"center",marginTop:3},done:{alignSelf:"center",width:62,height:62,borderRadius:31,backgroundColor:"#E8F6EE",color:C.success,fontSize:42,fontWeight:"800",textAlign:"center",lineHeight:60,marginBottom:12},score:{flexDirection:"row-reverse",justifyContent:"space-between",padding:12,borderBottomWidth:1,borderBottomColor:"#EDF0F3"},scoreTitle:{color:C.text,fontSize:13},scoreVal:{fontWeight:"800",color:C.dark},total:{backgroundColor:C.pale,borderBottomWidth:0,marginTop:5,borderRadius:8},sectionTitle:{fontSize:16,fontWeight:"800",color:C.dark,textAlign:"right",marginTop:20,marginBottom:10},barWrap:{marginBottom:12},barHead:{flexDirection:"row-reverse",justifyContent:"space-between",marginBottom:5},barTitle:{fontSize:12,color:C.text,fontWeight:"700"},barValue:{fontSize:12,color:C.dark,fontWeight:"800"},barTrack:{height:10,backgroundColor:"#E8EBEF",borderRadius:8,overflow:"hidden"},barFill:{height:"100%",backgroundColor:C.primary,borderRadius:8},metrics:{flexDirection:"row",gap:10},metric:{flex:1,backgroundColor:C.pale,padding:13,borderRadius:10,alignItems:"center",marginBottom:10},metricValue:{fontSize:21,fontWeight:"800",color:C.dark},metricTitle:{fontSize:11,color:C.muted,marginTop:5},toggle:{flexDirection:"row-reverse",justifyContent:"space-between",alignItems:"center",padding:12,backgroundColor:C.bg,borderRadius:9},toggleValue:{fontWeight:"800",color:C.dark},exportRow:{flexDirection:"row-reverse",gap:8,marginBottom:12},exportBtn:{flex:1,padding:12,backgroundColor:C.pale,borderRadius:9,alignItems:"center"},exportText:{fontSize:12,fontWeight:"800",color:C.dark},responseCard:{borderWidth:1,borderColor:C.border,borderRadius:10,padding:12,marginTop:9},responseTitle:{fontWeight:"800",color:C.dark,textAlign:"right"},smallMuted:{fontSize:10,color:C.muted,textAlign:"right"},answerList:{borderTopWidth:1,borderTopColor:C.border,marginTop:10,paddingTop:7},answerLine:{paddingVertical:7,borderBottomWidth:1,borderBottomColor:"#F0F1F3"},answerText:{fontSize:12,color:C.text,textAlign:"right",lineHeight:19},answerValue:{fontSize:12,color:C.dark,fontWeight:"800",textAlign:"left",marginTop:3},empty:{textAlign:"center",color:C.muted,padding:15},selectedPanel:{marginTop:14,padding:12,borderRadius:10,backgroundColor:C.bg},loading:{position:"absolute",top:8,right:8,backgroundColor:"#fff",padding:7,borderRadius:20}
 });

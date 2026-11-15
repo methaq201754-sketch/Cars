@@ -120,8 +120,10 @@ export default function App() {
       .eq("id",profile.employee_id)
       .maybeSingle();
     if(empError) throw empError;
-    if(!empRow || !empRow.is_active || empRow.employment_status !== "active")
-      throw new Error("ملف الموظف غير فعال أو غير متاح للدخول.");
+    // employees.is_active is the authoritative login flag. employment_status may be
+    // NULL or use legacy labels in migrated employee records; do not reject those.
+    if(!empRow || empRow.is_active === false)
+      throw new Error("ملف الموظف غير مفعل في سجل الموظفين. راجع مسؤول النظام لتفعيل is_active.");
 
     const {data:userRoleRows,error:rolesError} = await supabase
       .from("user_roles").select("role_id").eq("user_id",authUser.id);
@@ -144,8 +146,29 @@ export default function App() {
     }));
     const permissionMap=Object.fromEntries(permissionResults);
     setPermissions(permissionMap);
-    const {data:isAdmin}=await supabase.rpc("is_system_admin");
-    setSystemAdmin(isAdmin===true || codes.includes("SYSTEM_ADMIN"));
+    const {data:isAdmin,error:adminCheckError}=await supabase.rpc("is_system_admin");
+    const adminFlag =
+      isAdmin === true ||
+      String(isAdmin ?? "").toLowerCase() === "true" ||
+      isAdmin?.is_system_admin === true ||
+      isAdmin?.is_system_admin === "true" ||
+      (Array.isArray(isAdmin) && isAdmin.some((r:any)=>r?.is_system_admin === true || r?.is_system_admin === "true"));
+    // Fallback: read role codes through the FK relationship if the separate
+    // role lookup returned no rows because of a restricted roles SELECT policy.
+    let finalRoleCodes = codes;
+    if (!finalRoleCodes.length) {
+      const {data:joinedRoles} = await supabase
+        .from("user_roles")
+        .select("role:roles(role_code,is_active)")
+        .eq("user_id",authUser.id);
+      finalRoleCodes = (joinedRoles||[])
+        .map((r:any)=>Array.isArray(r.role)?r.role[0]?.role_code:r.role?.role_code)
+        .filter(Boolean);
+      if (finalRoleCodes.length) setRoleCodes(finalRoleCodes);
+    }
+    const isSystemAdministrator = adminFlag || finalRoleCodes.includes("SYSTEM_ADMIN");
+    setSystemAdmin(isSystemAdministrator);
+    if (adminCheckError) console.warn("is_system_admin check:", adminCheckError.message);
 
     let surveyAdmin=false;
     try{
@@ -157,7 +180,7 @@ export default function App() {
     const emp:Employee={
       employee_number:empRow.employee_number,
       employee_name:profile.display_name||empRow.employee_name,
-      is_survey_admin:surveyAdmin || permissionMap.SURVEYS_MANAGE===true || isAdmin===true
+      is_survey_admin:surveyAdmin || permissionMap.SURVEYS_MANAGE===true || isSystemAdministrator
     };
     setEmployee(emp);
     setEmployeeNo(emp.employee_number);

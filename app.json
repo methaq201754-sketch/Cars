@@ -2,7 +2,7 @@
   "expo": {
     "name": "نظام الموارد البشرية",
     "slug": "company-hr-system",
-    "version": "2.0.0",
+    "version": "2.2.2",
     "orientation": "portrait",
     "userInterfaceStyle": "light",
     "splash": {
@@ -11,8 +11,8 @@
     },
     "android": {
       "package": "com.company.employee.survey",
-      "versionCode": 2,
-      "minSdkVersion": 21
+      "versionCode": 3,
+      "minSdkVersion": 22
     }
   }
 }

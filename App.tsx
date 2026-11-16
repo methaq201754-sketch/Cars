@@ -111,18 +111,48 @@ export default function App() {
       .eq("user_id",authUser.id)
       .maybeSingle();
     if(profileError) throw profileError;
-    if(!profile || !profile.is_active) throw new Error("لا يوجد ملف مستخدم فعال مرتبط بهذا الحساب. يرجى مراجعة مسؤول النظام.");
-    if(!profile.employee_id) throw new Error("لم يتم ربط حساب الدخول بملف موظف.");
+    if(!profile || profile.is_active !== true)
+      throw new Error("لا يوجد ملف مستخدم فعال مرتبط بهذا الحساب. يرجى مراجعة مسؤول النظام.");
 
-    const {data:empRow,error:empError} = await supabase
-      .from("employees")
-      .select("id,employee_number,employee_name,is_active,employment_status")
-      .eq("id",profile.employee_id)
-      .maybeSingle();
-    if(empError) throw empError;
+    // Extract the employee number from the login email: emp-<number>@hr.company.invalid
+    const email = String(authUser.email || "").trim().toLowerCase();
+    const emailMatch = email.match(/^emp-(.+)@hr\.company\.invalid$/);
+    const loginEmployeeNumber = emailMatch?.[1]?.trim() || "";
+
+    let empRow:any = null;
+
+    // First try the employee UUID linked to the user profile.
+    if(profile.employee_id){
+      const {data,error} = await supabase
+        .from("employees")
+        .select("id,employee_number,employee_name,is_active,employment_status")
+        .eq("id",profile.employee_id)
+        .maybeSingle();
+      if(error) throw error;
+      empRow = data;
+    }
+
+    // If the profile link is missing or stale, use the employee number from the authenticated login.
+    if(!empRow && loginEmployeeNumber){
+      const {data,error} = await supabase
+        .from("employees")
+        .select("id,employee_number,employee_name,is_active,employment_status")
+        .eq("employee_number",loginEmployeeNumber)
+        .maybeSingle();
+      if(error) throw error;
+      empRow = data;
+    }
+
+    if(!empRow)
+      throw new Error("لم يتم العثور على سجل الموظف المرتبط بالحساب. تحقق من ربط employee_id أو تطابق الرقم الوظيفي في سجل الموظفين.");
+
+    // Never allow an account to load a different employee's record.
+    if(loginEmployeeNumber && String(empRow.employee_number) !== loginEmployeeNumber)
+      throw new Error("رقم الموظف المرتبط بالحساب لا يطابق رقم الدخول. راجع مسؤول النظام لتصحيح الربط.");
+
     // employees.is_active is the authoritative login flag. employment_status may be
     // NULL or use legacy labels in migrated employee records; do not reject those.
-    if(!empRow || empRow.is_active === false)
+    if(empRow.is_active !== true)
       throw new Error("ملف الموظف غير مفعل في سجل الموظفين. راجع مسؤول النظام لتفعيل is_active.");
 
     const {data:userRoleRows,error:rolesError} = await supabase
@@ -528,7 +558,7 @@ export default function App() {
   </SafeAreaView>;
 }
 
-function html(v:any){return String(v??"").replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c] as string));}
+function html(v:any){return String(v??"").replace(/[&<>\"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c] as string));}
 function Field(p:any){return <View style={s.field}><Text style={s.label}>{p.label}</Text><TextInput {...p} style={s.input} placeholderTextColor="#9AA3AD" textAlign="right" autoCapitalize="none"/></View>;}
 function Choices({label,values,value,onChange}:{label:string;values:string[];value:string;onChange:(v:string)=>void}){return <View style={s.field}><Text style={s.label}>{label}</Text><View style={s.chips}>{values.map(v=><Pressable key={v} onPress={()=>onChange(v)} style={[s.chip,value===v&&s.chipActive]}><Text style={[s.chipText,value===v&&s.white]}>{v}</Text></Pressable>)}</View></View>;}
 function Btn({title,onPress,secondary=false,disabled=false}:{title:string;onPress:()=>void;secondary?:boolean;disabled?:boolean}){return <Pressable onPress={onPress} disabled={disabled} style={[s.btn,secondary&&s.btn2,disabled&&{opacity:.5}]}><Text style={[s.btnText,secondary&&s.btnText2]}>{title}</Text></Pressable>;}

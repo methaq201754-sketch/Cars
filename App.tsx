@@ -3,7 +3,7 @@ import React, { useEffect, useMemo, useState } from "react";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import {
   Alert, KeyboardAvoidingView, Platform, Pressable, SafeAreaView,
-  ScrollView, StatusBar, StyleSheet, Text, TextInput, View, ActivityIndicator
+  ScrollView, StatusBar, StyleSheet, Text, TextInput, View, ActivityIndicator, Modal
 } from "react-native";
 import { createClient } from "@supabase/supabase-js";
 import * as FileSystem from "expo-file-system";
@@ -54,7 +54,7 @@ const branchCodeOf = (r:any) => String(pick(r,["branch_code","code"]));
 const branchNameOf = (r:any) => String(pick(r,["branch_name","name","branch"]));
 
 export default function App() {
-  const [screen,setScreen] = useState<"login"|"dashboard"|"home"|"employee"|"survey"|"result"|"admin"|"workflow">("login");
+  const [screen,setScreen] = useState<"login"|"dashboard"|"home"|"employee"|"survey"|"result"|"admin"|"workflow"|"employees">("login");
   const [employeeNo,setEmployeeNo] = useState("");
   const [password,setPassword] = useState("");
   const [employee,setEmployee] = useState<Employee|null>(null);
@@ -84,6 +84,16 @@ export default function App() {
   const [workflowManager,setWorkflowManager] = useState("");
   const [workflowApproverRole,setWorkflowApproverRole] = useState<"SERVICES_ADMIN"|"REQUEST_AUDITOR">("SERVICES_ADMIN");
   const [workflowApproverEmployee,setWorkflowApproverEmployee] = useState("");
+  const [workflowPicker,setWorkflowPicker] = useState<null|"employee"|"manager"|"bulkManager"|"bulkEmployees">(null);
+  const [workflowPickerSearch,setWorkflowPickerSearch] = useState("");
+  const [workflowBulkManager,setWorkflowBulkManager] = useState("");
+  const [workflowBulkEmployees,setWorkflowBulkEmployees] = useState<string[]>([]);
+  const [employeesRows,setEmployeesRows] = useState<any[]>([]);
+  const [employeeSearch,setEmployeeSearch] = useState("");
+  const [selectedEmployeeRecord,setSelectedEmployeeRecord] = useState<any>(null);
+  const [editEmployeeJobTitle,setEditEmployeeJobTitle] = useState("");
+  const [editEmployeeDepartment,setEditEmployeeDepartment] = useState("");
+  const [editEmployeeActive,setEditEmployeeActive] = useState(true);
 
   const questions = selectedSurvey?.questions || [];
   const progress = useMemo(()=>questions.length ? Math.round(Object.keys(answers).length/questions.length*100) : 0,[answers,questions.length]);
@@ -168,7 +178,7 @@ export default function App() {
     }
     setRoleCodes(codes);
 
-    const permissionCodes=["SURVEYS_VIEW","SURVEYS_MANAGE","ASSETS_VIEW","GRIEVANCES_VIEW","GRIEVANCES_CREATE","IDEAS_VIEW","IDEAS_CREATE","SERVICES_VIEW","SERVICES_CREATE","REPORTS_VIEW","EMPLOYEES_VIEW","USERS_MANAGE","SETTINGS_MANAGE"];
+    const permissionCodes=["SURVEYS_VIEW","SURVEYS_MANAGE","ASSETS_VIEW","GRIEVANCES_VIEW","GRIEVANCES_CREATE","IDEAS_VIEW","IDEAS_CREATE","SERVICES_VIEW","SERVICES_CREATE","REPORTS_VIEW","EMPLOYEES_VIEW","EMPLOYEES_UPDATE","USERS_MANAGE","SETTINGS_MANAGE"];
     const permissionResults=await Promise.all(permissionCodes.map(async code=>{
       const {data,error}=await supabase.rpc("has_permission",{p_permission_code:code});
       if(error) return [code,false] as [string,boolean];
@@ -362,6 +372,67 @@ export default function App() {
     try{const f=await Print.printToFileAsync({html:doc}); if(await Sharing.isAvailableAsync()) await Sharing.shareAsync(f.uri,{mimeType:"application/pdf",dialogTitle:"تصدير تقرير PDF"}); else Alert.alert("تم إنشاء PDF",f.uri);}catch(e:any){Alert.alert("تعذر تصدير PDF",errText(e));}
   };
 
+  const loadEmployees = async () => {
+    if(!(systemAdmin || permissions.EMPLOYEES_VIEW))
+      throw new Error("لا تملك صلاحية عرض ملفات الموظفين.");
+    const {data,error}=await supabase
+      .from("employees")
+      .select("id,employee_number,employee_name,job_title,department_name,is_active")
+      .order("employee_number",{ascending:true})
+      .limit(1000);
+    if(error) throw error;
+    setEmployeesRows(data||[]);
+    return data||[];
+  };
+
+  const openEmployeeManagement = async () => {
+    if(!(systemAdmin || permissions.EMPLOYEES_VIEW)){
+      Alert.alert("غير مصرح","لا تملك صلاحية عرض ملفات الموظفين.");
+      return;
+    }
+    setBusy(true);
+    try{
+      await loadEmployees();
+      setEmployeeSearch("");
+      setSelectedEmployeeRecord(null);
+      setScreen("employees");
+    }catch(e:any){Alert.alert("تعذر تحميل الموظفين",errText(e));}
+    finally{setBusy(false);}
+  };
+
+  const saveEmployeeRecord = async () => {
+    if(!(systemAdmin || permissions.EMPLOYEES_UPDATE)){
+      Alert.alert("غير مصرح","لا تملك صلاحية تعديل ملفات الموظفين.");
+      return;
+    }
+    if(!selectedEmployeeRecord?.id){Alert.alert("اختر الموظف","حدد ملف الموظف المراد تعديله.");return;}
+    setBusy(true);
+    try{
+      const {data:updatedRows,error}=await supabase.from("employees").update({
+        job_title:editEmployeeJobTitle.trim()||null,
+        department_name:editEmployeeDepartment.trim()||null,
+        is_active:editEmployeeActive
+      }).eq("id",selectedEmployeeRecord.id).select("id");
+      if(error) throw error;
+      if(!updatedRows?.length) throw new Error("لم يتم تعديل السجل. تحقق من صلاحية EMPLOYEES_UPDATE وسياسة RLS.");
+      const refreshed=await loadEmployees();
+      const updated=refreshed.find((r:any)=>r.id===selectedEmployeeRecord.id)||null;
+      setSelectedEmployeeRecord(updated);
+      Alert.alert("تم الحفظ","تم تحديث بيانات الموظف بنجاح.");
+    }catch(e:any){Alert.alert("تعذر حفظ بيانات الموظف",errText(e));}
+    finally{setBusy(false);}
+  };
+
+  const filteredEmployees=employeesRows.filter((r:any)=>{
+    const q=employeeSearch.trim().toLowerCase();
+    return !q || String(r.employee_number||"").toLowerCase().includes(q) ||
+      String(r.employee_name||"").toLowerCase().includes(q) ||
+      String(r.department_name||"").toLowerCase().includes(q) ||
+      String(r.job_title||"").toLowerCase().includes(q);
+  }).slice(0,100);
+  const activeEmployeesCount=employeesRows.filter((r:any)=>r.is_active===true).length;
+  const inactiveEmployeesCount=employeesRows.length-activeEmployeesCount;
+
   const loadWorkflowManagementData = async () => {
     if(!systemAdmin) throw new Error("هذه الشاشة متاحة لمدير النظام فقط.");
     const {data,error}=await supabase.rpc("get_workflow_management_data");
@@ -397,6 +468,21 @@ export default function App() {
     finally{setBusy(false);}
   };
 
+  const saveBulkEmployeeWorkflowAssignments = async () => {
+    if(!workflowBulkManager || !workflowBranch || !workflowBulkEmployees.length){Alert.alert("بيانات ناقصة","اختر المدير والفرع وموظفاً واحداً على الأقل.");return;}
+    setBusy(true);
+    try{
+      const {data,error}=await supabase.rpc("set_employee_workflow_assignments",{
+        p_employee_numbers:workflowBulkEmployees,p_branch_code:workflowBranch,p_manager_employee_number:workflowBulkManager
+      });
+      if(error) throw error;
+      await loadWorkflowManagementData();
+      setWorkflowBulkEmployees([]);
+      Alert.alert("تم الحفظ",`تم حفظ التعيينات الجماعية بنجاح. عدد الموظفين: ${Number(data?.count ?? workflowBulkEmployees.length)}.`);
+    }catch(e:any){Alert.alert("تعذر حفظ التعيينات الجماعية",errText(e));}
+    finally{setBusy(false);}
+  };
+
   const changeManagerRole = async (person:any, enabled:boolean) => {
     const no=employeeNoOf(person); if(!no) return;
     setBusy(true);
@@ -426,11 +512,18 @@ export default function App() {
   const filteredWorkflowEmployees=workflowData.employees.filter((r:any)=>{
     const q=workflowSearch.trim().toLowerCase();
     return !q || employeeNoOf(r).toLowerCase().includes(q) || employeeNameOf(r).toLowerCase().includes(q);
-  }).slice(0,35);
+  });
+  const pickerSource = workflowPicker === "manager" || workflowPicker === "bulkManager" ? workflowData.managers : workflowData.employees;
+  const filteredPickerRows = pickerSource.filter((r:any)=>{
+    const q=workflowPickerSearch.trim().toLowerCase();
+    return !q || employeeNoOf(r).toLowerCase().includes(q) || employeeNameOf(r).toLowerCase().includes(q);
+  });
+  const openWorkflowPicker = (kind:NonNullable<typeof workflowPicker>) => { setWorkflowPickerSearch(""); setWorkflowPicker(kind); };
+  const toggleBulkEmployee = (no:string) => setWorkflowBulkEmployees(prev=>prev.includes(no)?prev.filter(x=>x!==no):[...prev,no]);
   const managerNumbers=new Set(workflowData.managers.map((r:any)=>employeeNoOf(r)));
 
   const reset = () => {setScreen("home");setSelectedSurvey(null);setAnswers({});setReason("");setResult(null);};
-  const logout = async () => {await supabase.auth.signOut();setEmployee(null);setEmployeeNo("");setPassword("");setCatalog([]);setSelectedSurvey(null);setAdminRows([]);setRoleCodes([]);setPermissions({});setSystemAdmin(false);setScreen("login");};
+  const logout = async () => {await supabase.auth.signOut();setEmployee(null);setEmployeeNo("");setPassword("");setCatalog([]);setSelectedSurvey(null);setAdminRows([]);setRoleCodes([]);setPermissions({});setSystemAdmin(false);setEmployeesRows([]);setSelectedEmployeeRecord(null);setScreen("login");};
 
   return <SafeAreaView style={s.safe}><StatusBar barStyle="dark-content"/>
     {screen==="login" && <ScrollView contentContainerStyle={s.container}>
@@ -446,7 +539,7 @@ export default function App() {
     {screen==="dashboard" && <ScrollView contentContainerStyle={s.container}>
       <View style={s.hero}><Text style={s.heroTitle}>مرحباً {employee?.employee_name}</Text><Text style={s.heroSub}>الرقم الوظيفي: {employee?.employee_number}</Text></View>
       <View style={s.card}><Text style={s.title}>خدمات النظام</Text><Text style={s.sub}>تظهر الوحدات وفق الصلاحيات الممنوحة لحسابك.</Text>
-        {(systemAdmin||permissions.EMPLOYEES_VIEW)&&<View style={s.surveyCard}><Text style={s.surveyTitle}>ملف الموظفين</Text><Text style={s.sub}>إدارة بيانات الموظفين والأقسام والدرجات والمؤهلات.</Text><Text style={s.status}>واجهة الوحدة ضمن مراحل التجهيز</Text></View>}
+        {(systemAdmin||permissions.EMPLOYEES_VIEW)&&<View style={s.surveyCard}><Text style={s.surveyTitle}>ملف الموظفين</Text><Text style={s.sub}>عرض ملفات الموظفين والبحث فيها وتحديث القسم والمسمى الوظيفي وحالة التفعيل للمخولين.</Text><Btn title="فتح إدارة الموظفين" onPress={openEmployeeManagement}/></View>}
         {(systemAdmin||permissions.SURVEYS_VIEW||permissions.SURVEYS_MANAGE)&&<View style={s.surveyCard}><Text style={s.surveyTitle}>الاستبيانات</Text><Text style={s.sub}>استبيان رضا الموظفين وتقييم الخدمات، مع إدارة الفترات والنتائج للمخولين.</Text><Btn title="فتح وحدة الاستبيانات" onPress={async()=>{setBusy(true);try{await loadCatalog();setScreen(employee?.is_survey_admin?"admin":"home");if(employee?.is_survey_admin) await loadAdmin(adminSurveyId,employee?.employee_number);}catch(e:any){Alert.alert("تعذر تحميل الاستبيانات",errText(e));}finally{setBusy(false);}}}/></View>}
         {(systemAdmin||permissions.ASSETS_VIEW)&&<View style={s.surveyCard}><Text style={s.surveyTitle}>الأصول والعهد</Text><Text style={s.status}>قاعدة البيانات مجهزة — واجهات التطبيق في مرحلة التجهيز</Text></View>}
         {(systemAdmin||permissions.GRIEVANCES_VIEW||permissions.GRIEVANCES_CREATE)&&<View style={s.surveyCard}><Text style={s.surveyTitle}>الشكاوى والتظلمات والتحقيقات</Text><Text style={s.status}>قاعدة البيانات مجهزة — واجهات التطبيق في مرحلة التجهيز</Text></View>}
@@ -521,21 +614,63 @@ export default function App() {
       </View>
       <Btn title="تسجيل الخروج" secondary onPress={logout}/>
     </ScrollView>}
+    {screen==="employees" && <ScrollView contentContainerStyle={s.container}>
+      <View style={s.hero}><Text style={s.heroTitle}>إدارة ملفات الموظفين</Text><Text style={s.heroSub}>عرض وبحث وتحديث بيانات الموظفين وفق الصلاحيات الممنوحة</Text></View>
+      <View style={s.card}>
+        <Text style={s.title}>ملخص السجل الوظيفي</Text>
+        <View style={s.metrics}>
+          <Metric title="إجمالي السجلات المحملة" value={String(employeesRows.length)}/>
+          <Metric title="الموظفون النشطون" value={String(activeEmployeesCount)}/>
+          <Metric title="غير النشطين" value={String(inactiveEmployeesCount)}/>
+        </View>
+        <Field label="البحث عن موظف" value={employeeSearch} onChangeText={setEmployeeSearch} placeholder="الاسم أو الرقم أو القسم أو المسمى"/>
+        <Text style={s.sub}>يعرض التطبيق أول 100 نتيجة مطابقة. اضغط على الموظف لعرض بياناته.</Text>
+        {filteredEmployees.map((r:any)=><Pressable key={String(r.id)} onPress={()=>{
+          setSelectedEmployeeRecord(r);
+          setEditEmployeeJobTitle(String(r.job_title||""));
+          setEditEmployeeDepartment(String(r.department_name||""));
+          setEditEmployeeActive(r.is_active===true);
+        }} style={[s.responseCard,selectedEmployeeRecord?.id===r.id&&{borderColor:C.primary,backgroundColor:C.pale}]}>
+          <Text style={s.responseTitle}>{r.employee_name||"بدون اسم"} — {r.employee_number}</Text>
+          <Text style={s.smallMuted}>{r.department_name||"القسم غير محدد"} | {r.job_title||"المسمى غير محدد"}</Text>
+          <Text style={[s.status,{color:r.is_active===true?C.success:C.primary}]}>{r.is_active===true?"نشط":"غير نشط"}</Text>
+        </Pressable>)}
+        {!filteredEmployees.length&&<Text style={s.empty}>لا توجد نتائج مطابقة للبحث.</Text>}
+        <Btn title="تحديث قائمة الموظفين" secondary disabled={busy} onPress={async()=>{setBusy(true);try{await loadEmployees();}catch(e:any){Alert.alert("تعذر التحديث",errText(e));}finally{setBusy(false);}}}/>
+      </View>
+      {selectedEmployeeRecord&&<View style={s.card}>
+        <Text style={s.title}>بيانات الموظف المحدد</Text>
+        <View style={s.readonly}><Text style={s.label}>اسم الموظف</Text><Text style={s.readonlyText}>{selectedEmployeeRecord.employee_name||"—"}</Text></View>
+        <View style={s.readonly}><Text style={s.label}>الرقم الوظيفي</Text><Text style={s.readonlyText}>{selectedEmployeeRecord.employee_number}</Text></View>
+        {systemAdmin||permissions.EMPLOYEES_UPDATE ? <>
+          <Field label="القسم" value={editEmployeeDepartment} onChangeText={setEditEmployeeDepartment} placeholder="اسم القسم"/>
+          <Field label="المسمى الوظيفي" value={editEmployeeJobTitle} onChangeText={setEditEmployeeJobTitle} placeholder="المسمى الوظيفي"/>
+          <Pressable onPress={()=>setEditEmployeeActive(v=>!v)} style={s.toggle}>
+            <Text style={s.label}>حالة ملف الموظف</Text>
+            <Text style={[s.toggleValue,{color:editEmployeeActive?C.success:C.primary}]}>{editEmployeeActive?"نشط — يسمح بتسجيل الدخول":"غير نشط — يمنع تسجيل الدخول"} ◉</Text>
+          </Pressable>
+          <Btn title="حفظ تعديلات الموظف" disabled={busy} onPress={saveEmployeeRecord}/>
+        </> : <Text style={s.sub}>حسابك يملك صلاحية العرض فقط، ولا يملك صلاحية تعديل بيانات الموظفين.</Text>}
+      </View>}
+      <Btn title="العودة إلى خدمات النظام" secondary onPress={()=>setScreen("dashboard")}/>
+    </ScrollView>}
+
     {screen==="workflow" && systemAdmin && <ScrollView contentContainerStyle={s.container}>
       <View style={s.hero}><Text style={s.heroTitle}>إدارة مسارات الموافقات</Text><Text style={s.heroSub}>إعداد المدير المباشر ومسؤولي الخدمات والمراجعة حسب الفرع</Text></View>
-      <View style={s.card}><Text style={s.title}>1. تعيين المدير المباشر للموظف</Text><Text style={s.sub}>ابحث بالاسم أو الرقم الوظيفي، ثم حدد الفرع والمدير المباشر. يعرض النظام أول 35 نتيجة مطابقة.</Text>
-        <Field label="البحث عن الموظف" value={workflowSearch} onChangeText={setWorkflowSearch} placeholder="الاسم أو الرقم الوظيفي"/>
-        {filteredWorkflowEmployees.map((r:any)=>{
-          const no=employeeNoOf(r); const selected=employeeNoOf(workflowSelectedEmployee)===no;
-          const currentManager=String(pick(r,["manager_employee_number","manager_number"],""));
-          const currentBranch=String(pick(r,["branch_code"],""));
-          return <Pressable key={no} onPress={()=>{setWorkflowSelectedEmployee(r);setWorkflowManager(currentManager);if(currentBranch)setWorkflowBranch(currentBranch);}} style={[s.responseCard,selected&&{borderColor:C.primary,backgroundColor:C.pale}]}><Text style={s.responseTitle}>{employeeNameOf(r)} — {no}</Text><Text style={s.smallMuted}>الفرع: {String(pick(r,["branch_name"],"غير محدد"))} | المدير الحالي: {currentManager||"غير معين"}</Text></Pressable>;
-        })}
+      <View style={s.card}><Text style={s.title}>1. تعيين مدير مباشر لموظف</Text><Text style={s.sub}>جميع الموظفين النشطين متاحون في قائمة منسدلة قابلة للبحث، دون حد أقصى للنتائج. إجمالي الموظفين المحملين: {workflowData.employees.length}.</Text>
+        <Btn title={workflowSelectedEmployee?`${employeeNameOf(workflowSelectedEmployee)} — ${employeeNoOf(workflowSelectedEmployee)}`:"اختر الموظف من القائمة"} secondary onPress={()=>openWorkflowPicker("employee")}/>
         {workflowSelectedEmployee&&<View style={s.selectedPanel}><Text style={s.label}>الموظف المحدد: {employeeNameOf(workflowSelectedEmployee)} ({employeeNoOf(workflowSelectedEmployee)})</Text>
           <Text style={s.label}>الفرع</Text><View style={s.chips}>{workflowData.branches.map((b:any)=><Pressable key={branchCodeOf(b)} onPress={()=>setWorkflowBranch(branchCodeOf(b))} style={[s.chip,workflowBranch===branchCodeOf(b)&&s.chipActive]}><Text style={[s.chipText,workflowBranch===branchCodeOf(b)&&s.white]}>{branchNameOf(b)}</Text></Pressable>)}</View>
-          <Text style={s.label}>المدير المباشر</Text><View style={s.chips}>{workflowData.managers.map((m:any)=><Pressable key={employeeNoOf(m)} onPress={()=>setWorkflowManager(employeeNoOf(m))} style={[s.chip,workflowManager===employeeNoOf(m)&&s.chipActive]}><Text style={[s.chipText,workflowManager===employeeNoOf(m)&&s.white]}>{employeeNameOf(m)} ({employeeNoOf(m)})</Text></Pressable>)}</View>
+          <Text style={s.label}>المدير المباشر</Text>
+          <Btn title={workflowData.managers.find((m:any)=>employeeNoOf(m)===workflowManager)?`${employeeNameOf(workflowData.managers.find((m:any)=>employeeNoOf(m)===workflowManager))} — ${workflowManager}`:"اختر المدير المباشر"} secondary onPress={()=>openWorkflowPicker("manager")}/>
           <Btn title="حفظ تعيين الموظف" disabled={busy} onPress={saveEmployeeWorkflowAssignment}/>
         </View>}
+      </View>
+      <View style={s.card}><Text style={s.title}>2. تعيين عدة موظفين لمدير واحد</Text><Text style={s.sub}>اختر المدير أولاً، ثم حدد الموظفين المطلوب إلحاقهم به. يمكنك البحث أو تحديد جميع الموظفين.</Text>
+        <Btn title={workflowBulkManager?`${employeeNameOf(workflowData.managers.find((m:any)=>employeeNoOf(m)===workflowBulkManager)||{})} — ${workflowBulkManager}`:"اختر المدير المباشر"} secondary onPress={()=>openWorkflowPicker("bulkManager")}/>
+        <Text style={s.label}>الفرع</Text><View style={s.chips}>{workflowData.branches.map((b:any)=><Pressable key={branchCodeOf(b)} onPress={()=>setWorkflowBranch(branchCodeOf(b))} style={[s.chip,workflowBranch===branchCodeOf(b)&&s.chipActive]}><Text style={[s.chipText,workflowBranch===branchCodeOf(b)&&s.white]}>{branchNameOf(b)}</Text></Pressable>)}</View>
+        <Btn title={`اختيار الموظفين (${workflowBulkEmployees.length} محدد)`} secondary onPress={()=>openWorkflowPicker("bulkEmployees")}/>
+        <Btn title="حفظ تعيينات الموظفين المحددين" disabled={busy||!workflowBulkEmployees.length} onPress={saveBulkEmployeeWorkflowAssignments}/>
       </View>
       <View style={s.card}><Text style={s.title}>2. إدارة المديرين المباشرين</Text><Text style={s.sub}>اختر موظفاً من نتائج البحث أعلاه ثم أضف أو أزل عنه دور المدير المباشر. لا يمكن إزالة مدير لديه موظفون مرتبطون بتعيين نشط.</Text>
         {workflowSelectedEmployee&&<><Text style={s.body}>{employeeNameOf(workflowSelectedEmployee)} — {employeeNoOf(workflowSelectedEmployee)}</Text><Text style={s.status}>{managerNumbers.has(employeeNoOf(workflowSelectedEmployee))?"لديه حالياً دور مدير مباشر":"ليس لديه دور مدير مباشر"}</Text><Btn title={managerNumbers.has(employeeNoOf(workflowSelectedEmployee))?"إزالة دور المدير المباشر":"إضافة دور المدير المباشر"} secondary={!managerNumbers.has(employeeNoOf(workflowSelectedEmployee))} disabled={busy} onPress={()=>changeManagerRole(workflowSelectedEmployee,!managerNumbers.has(employeeNoOf(workflowSelectedEmployee)))}/></>}
@@ -554,6 +689,23 @@ export default function App() {
       <Btn title="تحديث البيانات" secondary disabled={busy} onPress={async()=>{setBusy(true);try{await loadWorkflowManagementData();}catch(e:any){Alert.alert("تعذر التحديث",errText(e));}finally{setBusy(false);}}}/>
       <Btn title="العودة إلى خدمات النظام" secondary onPress={()=>setScreen("dashboard")}/>
     </ScrollView>}
+    <Modal visible={workflowPicker!==null} transparent animationType="slide" onRequestClose={()=>setWorkflowPicker(null)}>
+      <View style={s.modalBackdrop}><View style={s.modalCard}>
+        <Text style={s.title}>{workflowPicker==="employee"?"اختيار الموظف":workflowPicker==="manager"||workflowPicker==="bulkManager"?"اختيار المدير المباشر":"اختيار الموظفين"}</Text>
+        <TextInput value={workflowPickerSearch} onChangeText={setWorkflowPickerSearch} style={s.input} placeholder="ابحث بالاسم أو الرقم الوظيفي" placeholderTextColor="#9AA3AD" textAlign="right" autoFocus/>
+        {workflowPicker==="bulkEmployees"&&<View style={s.modalActions}>
+          <Pressable onPress={()=>setWorkflowBulkEmployees(workflowData.employees.map((r:any)=>employeeNoOf(r)).filter(Boolean))} style={s.modalAction}><Text style={s.chipText}>تحديد الكل ({workflowData.employees.length})</Text></Pressable>
+          <Pressable onPress={()=>setWorkflowBulkEmployees([])} style={s.modalAction}><Text style={s.chipText}>إلغاء التحديد</Text></Pressable>
+        </View>}
+        <ScrollView style={s.modalList} keyboardShouldPersistTaps="handled">
+          {filteredPickerRows.map((r:any)=>{const no=employeeNoOf(r);const selected=workflowPicker==="bulkEmployees"?workflowBulkEmployees.includes(no):workflowPicker==="employee"?employeeNoOf(workflowSelectedEmployee)===no:workflowPicker==="manager"?workflowManager===no:workflowBulkManager===no;return <Pressable key={no} onPress={()=>{if(workflowPicker==="employee"){setWorkflowSelectedEmployee(r);setWorkflowManager(String(pick(r,["manager_employee_number","manager_number"],"")));const bc=String(pick(r,["branch_code"],""));if(bc)setWorkflowBranch(bc);setWorkflowPicker(null);}else if(workflowPicker==="manager"){setWorkflowManager(no);setWorkflowPicker(null);}else if(workflowPicker==="bulkManager"){setWorkflowBulkManager(no);setWorkflowPicker(null);}else{toggleBulkEmployee(no);}}} style={[s.pickerRow,selected&&s.pickerRowSelected]}><Text style={[s.pickerCheck,selected&&{color:C.primary}]}>{selected?"☑":"□"}</Text><View style={{flex:1}}><Text style={s.responseTitle}>{employeeNameOf(r)} — {no}</Text><Text style={s.smallMuted}>{String(pick(r,["branch_name"],""))}</Text></View></Pressable>;})}
+          {!filteredPickerRows.length&&<Text style={s.empty}>لا توجد نتائج مطابقة.</Text>}
+        </ScrollView>
+        <Text style={s.sub}>عدد النتائج: {filteredPickerRows.length} من {pickerSource.length}{workflowPicker==="bulkEmployees"?` | المحدد: ${workflowBulkEmployees.length}`:""}</Text>
+        {workflowPicker==="bulkEmployees"&&<Btn title="اعتماد اختيار الموظفين" onPress={()=>setWorkflowPicker(null)}/>}
+        <Btn title="إغلاق" secondary onPress={()=>setWorkflowPicker(null)}/>
+      </View></View>
+    </Modal>
     {busy && <View pointerEvents="none" style={s.loading}><ActivityIndicator color={C.primary}/></View>}
   </SafeAreaView>;
 }
@@ -568,5 +720,5 @@ function AverageBar({title,value}:{title:string;value:number}){const v=Math.max(
 
 const s=StyleSheet.create({
  safe:{flex:1,backgroundColor:C.bg},container:{padding:16,paddingBottom:40},hero:{backgroundColor:C.primary,borderRadius:18,padding:22,marginBottom:16},heroTitle:{color:"#fff",fontSize:24,fontWeight:"800",textAlign:"right"},heroSub:{color:"#fff",fontSize:13,textAlign:"right",marginTop:8,lineHeight:21},
- card:{backgroundColor:"#fff",borderRadius:16,padding:17,marginBottom:15,borderWidth:1,borderColor:"#E7EAF0"},title:{fontSize:21,fontWeight:"800",color:C.text,textAlign:"right"},sub:{fontSize:12,color:C.muted,textAlign:"right",marginTop:5,marginBottom:12,lineHeight:20},body:{fontSize:15,color:C.text,textAlign:"right",lineHeight:25,marginVertical:12},field:{marginBottom:14},label:{fontSize:13,fontWeight:"700",color:C.text,textAlign:"right",marginBottom:7},input:{borderWidth:1,borderColor:C.border,borderRadius:10,backgroundColor:"#fff",padding:11,fontSize:14,color:C.text,minHeight:44},readonly:{marginBottom:13,alignItems:"flex-end"},readonlyText:{fontSize:15,color:C.dark,fontWeight:"700"},chips:{flexDirection:"row",flexWrap:"wrap",justifyContent:"flex-end",gap:7},chip:{borderWidth:1,borderColor:C.border,borderRadius:9,padding:9,backgroundColor:"#fff"},chipActive:{backgroundColor:C.primary,borderColor:C.primary},chipText:{fontSize:12,color:C.text},white:{color:"#fff"},btn:{backgroundColor:C.primary,borderRadius:10,paddingVertical:13,alignItems:"center",marginTop:8},btnText:{color:"#fff",fontWeight:"800",fontSize:14},btn2:{backgroundColor:"#fff",borderWidth:1,borderColor:C.border},btnText2:{color:C.dark},surveyCard:{borderWidth:1,borderColor:C.border,borderRadius:12,padding:13,marginTop:12},surveyTitle:{fontSize:16,fontWeight:"800",color:C.dark,textAlign:"right"},status:{fontSize:12,color:C.muted,textAlign:"right"},progress:{height:8,backgroundColor:"#E4E8ED",borderRadius:8,overflow:"hidden",marginTop:8},fill:{height:"100%",backgroundColor:C.primary},domain:{fontSize:17,fontWeight:"800",color:C.dark,textAlign:"right",marginVertical:10},qcard:{backgroundColor:"#fff",borderRadius:13,padding:14,marginBottom:11,borderWidth:1,borderColor:"#E7EAF0"},qno:{fontSize:12,fontWeight:"800",color:C.primary,textAlign:"right",marginBottom:6},question:{fontSize:14,fontWeight:"700",color:C.text,textAlign:"right",lineHeight:23,marginBottom:11},scale:{flexDirection:"row",flexWrap:"wrap",justifyContent:"flex-end",gap:6},scaleItem:{width:57,minHeight:60,borderWidth:1,borderColor:C.border,borderRadius:8,padding:5,alignItems:"center",justifyContent:"center"},active:{backgroundColor:C.primary,borderColor:C.primary},val:{fontSize:16,fontWeight:"800",color:C.dark},lbl:{fontSize:9,color:C.muted,textAlign:"center",marginTop:3},done:{alignSelf:"center",width:62,height:62,borderRadius:31,backgroundColor:"#E8F6EE",color:C.success,fontSize:42,fontWeight:"800",textAlign:"center",lineHeight:60,marginBottom:12},score:{flexDirection:"row-reverse",justifyContent:"space-between",padding:12,borderBottomWidth:1,borderBottomColor:"#EDF0F3"},scoreTitle:{color:C.text,fontSize:13},scoreVal:{fontWeight:"800",color:C.dark},total:{backgroundColor:C.pale,borderBottomWidth:0,marginTop:5,borderRadius:8},sectionTitle:{fontSize:16,fontWeight:"800",color:C.dark,textAlign:"right",marginTop:20,marginBottom:10},barWrap:{marginBottom:12},barHead:{flexDirection:"row-reverse",justifyContent:"space-between",marginBottom:5},barTitle:{fontSize:12,color:C.text,fontWeight:"700"},barValue:{fontSize:12,color:C.dark,fontWeight:"800"},barTrack:{height:10,backgroundColor:"#E8EBEF",borderRadius:8,overflow:"hidden"},barFill:{height:"100%",backgroundColor:C.primary,borderRadius:8},metrics:{flexDirection:"row",gap:10},metric:{flex:1,backgroundColor:C.pale,padding:13,borderRadius:10,alignItems:"center",marginBottom:10},metricValue:{fontSize:21,fontWeight:"800",color:C.dark},metricTitle:{fontSize:11,color:C.muted,marginTop:5},toggle:{flexDirection:"row-reverse",justifyContent:"space-between",alignItems:"center",padding:12,backgroundColor:C.bg,borderRadius:9},toggleValue:{fontWeight:"800",color:C.dark},exportRow:{flexDirection:"row-reverse",gap:8,marginBottom:12},exportBtn:{flex:1,padding:12,backgroundColor:C.pale,borderRadius:9,alignItems:"center"},exportText:{fontSize:12,fontWeight:"800",color:C.dark},responseCard:{borderWidth:1,borderColor:C.border,borderRadius:10,padding:12,marginTop:9},responseTitle:{fontWeight:"800",color:C.dark,textAlign:"right"},smallMuted:{fontSize:10,color:C.muted,textAlign:"right"},answerList:{borderTopWidth:1,borderTopColor:C.border,marginTop:10,paddingTop:7},answerLine:{paddingVertical:7,borderBottomWidth:1,borderBottomColor:"#F0F1F3"},answerText:{fontSize:12,color:C.text,textAlign:"right",lineHeight:19},answerValue:{fontSize:12,color:C.dark,fontWeight:"800",textAlign:"left",marginTop:3},empty:{textAlign:"center",color:C.muted,padding:15},selectedPanel:{marginTop:14,padding:12,borderRadius:10,backgroundColor:C.bg},loading:{position:"absolute",top:8,right:8,backgroundColor:"#fff",padding:7,borderRadius:20}
+ card:{backgroundColor:"#fff",borderRadius:16,padding:17,marginBottom:15,borderWidth:1,borderColor:"#E7EAF0"},title:{fontSize:21,fontWeight:"800",color:C.text,textAlign:"right"},sub:{fontSize:12,color:C.muted,textAlign:"right",marginTop:5,marginBottom:12,lineHeight:20},body:{fontSize:15,color:C.text,textAlign:"right",lineHeight:25,marginVertical:12},field:{marginBottom:14},label:{fontSize:13,fontWeight:"700",color:C.text,textAlign:"right",marginBottom:7},input:{borderWidth:1,borderColor:C.border,borderRadius:10,backgroundColor:"#fff",padding:11,fontSize:14,color:C.text,minHeight:44},readonly:{marginBottom:13,alignItems:"flex-end"},readonlyText:{fontSize:15,color:C.dark,fontWeight:"700"},chips:{flexDirection:"row",flexWrap:"wrap",justifyContent:"flex-end",gap:7},chip:{borderWidth:1,borderColor:C.border,borderRadius:9,padding:9,backgroundColor:"#fff"},chipActive:{backgroundColor:C.primary,borderColor:C.primary},chipText:{fontSize:12,color:C.text},white:{color:"#fff"},btn:{backgroundColor:C.primary,borderRadius:10,paddingVertical:13,alignItems:"center",marginTop:8},btnText:{color:"#fff",fontWeight:"800",fontSize:14},btn2:{backgroundColor:"#fff",borderWidth:1,borderColor:C.border},btnText2:{color:C.dark},surveyCard:{borderWidth:1,borderColor:C.border,borderRadius:12,padding:13,marginTop:12},surveyTitle:{fontSize:16,fontWeight:"800",color:C.dark,textAlign:"right"},status:{fontSize:12,color:C.muted,textAlign:"right"},progress:{height:8,backgroundColor:"#E4E8ED",borderRadius:8,overflow:"hidden",marginTop:8},fill:{height:"100%",backgroundColor:C.primary},domain:{fontSize:17,fontWeight:"800",color:C.dark,textAlign:"right",marginVertical:10},qcard:{backgroundColor:"#fff",borderRadius:13,padding:14,marginBottom:11,borderWidth:1,borderColor:"#E7EAF0"},qno:{fontSize:12,fontWeight:"800",color:C.primary,textAlign:"right",marginBottom:6},question:{fontSize:14,fontWeight:"700",color:C.text,textAlign:"right",lineHeight:23,marginBottom:11},scale:{flexDirection:"row",flexWrap:"wrap",justifyContent:"flex-end",gap:6},scaleItem:{width:57,minHeight:60,borderWidth:1,borderColor:C.border,borderRadius:8,padding:5,alignItems:"center",justifyContent:"center"},active:{backgroundColor:C.primary,borderColor:C.primary},val:{fontSize:16,fontWeight:"800",color:C.dark},lbl:{fontSize:9,color:C.muted,textAlign:"center",marginTop:3},done:{alignSelf:"center",width:62,height:62,borderRadius:31,backgroundColor:"#E8F6EE",color:C.success,fontSize:42,fontWeight:"800",textAlign:"center",lineHeight:60,marginBottom:12},score:{flexDirection:"row-reverse",justifyContent:"space-between",padding:12,borderBottomWidth:1,borderBottomColor:"#EDF0F3"},scoreTitle:{color:C.text,fontSize:13},scoreVal:{fontWeight:"800",color:C.dark},total:{backgroundColor:C.pale,borderBottomWidth:0,marginTop:5,borderRadius:8},sectionTitle:{fontSize:16,fontWeight:"800",color:C.dark,textAlign:"right",marginTop:20,marginBottom:10},barWrap:{marginBottom:12},barHead:{flexDirection:"row-reverse",justifyContent:"space-between",marginBottom:5},barTitle:{fontSize:12,color:C.text,fontWeight:"700"},barValue:{fontSize:12,color:C.dark,fontWeight:"800"},barTrack:{height:10,backgroundColor:"#E8EBEF",borderRadius:8,overflow:"hidden"},barFill:{height:"100%",backgroundColor:C.primary,borderRadius:8},metrics:{flexDirection:"row",gap:10},metric:{flex:1,backgroundColor:C.pale,padding:13,borderRadius:10,alignItems:"center",marginBottom:10},metricValue:{fontSize:21,fontWeight:"800",color:C.dark},metricTitle:{fontSize:11,color:C.muted,marginTop:5},toggle:{flexDirection:"row-reverse",justifyContent:"space-between",alignItems:"center",padding:12,backgroundColor:C.bg,borderRadius:9},toggleValue:{fontWeight:"800",color:C.dark},exportRow:{flexDirection:"row-reverse",gap:8,marginBottom:12},exportBtn:{flex:1,padding:12,backgroundColor:C.pale,borderRadius:9,alignItems:"center"},exportText:{fontSize:12,fontWeight:"800",color:C.dark},responseCard:{borderWidth:1,borderColor:C.border,borderRadius:10,padding:12,marginTop:9},responseTitle:{fontWeight:"800",color:C.dark,textAlign:"right"},smallMuted:{fontSize:10,color:C.muted,textAlign:"right"},answerList:{borderTopWidth:1,borderTopColor:C.border,marginTop:10,paddingTop:7},answerLine:{paddingVertical:7,borderBottomWidth:1,borderBottomColor:"#F0F1F3"},answerText:{fontSize:12,color:C.text,textAlign:"right",lineHeight:19},answerValue:{fontSize:12,color:C.dark,fontWeight:"800",textAlign:"left",marginTop:3},empty:{textAlign:"center",color:C.muted,padding:15},selectedPanel:{marginTop:14,padding:12,borderRadius:10,backgroundColor:C.bg},modalBackdrop:{flex:1,backgroundColor:"rgba(0,0,0,0.45)",justifyContent:"center",padding:14},modalCard:{backgroundColor:"#fff",borderRadius:16,padding:16,maxHeight:"88%"},modalList:{maxHeight:420,marginTop:10},modalActions:{flexDirection:"row-reverse",justifyContent:"space-between",marginTop:10},modalAction:{padding:9,borderWidth:1,borderColor:C.border,borderRadius:8},pickerRow:{flexDirection:"row-reverse",alignItems:"center",gap:10,padding:12,borderBottomWidth:1,borderBottomColor:"#EDF0F3"},pickerRowSelected:{backgroundColor:C.pale},pickerCheck:{fontSize:22,color:C.muted},loading:{position:"absolute",top:8,right:8,backgroundColor:"#fff",padding:7,borderRadius:20}
 });

@@ -3,7 +3,7 @@ import React, { useEffect, useMemo, useState } from "react";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import {
   Alert, KeyboardAvoidingView, Platform, Pressable, SafeAreaView,
-  ScrollView, StatusBar, StyleSheet, Text, TextInput, View, ActivityIndicator, Modal
+  ScrollView, StatusBar, StyleSheet, Text, TextInput, View, ActivityIndicator
 } from "react-native";
 import { createClient } from "@supabase/supabase-js";
 import * as FileSystem from "expo-file-system";
@@ -80,19 +80,20 @@ export default function App() {
   const [workflowData,setWorkflowData] = useState<WorkflowData>({branches:[],employees:[],managers:[],branch_approvers:[]});
   const [workflowSearch,setWorkflowSearch] = useState("");
   const [workflowSelectedEmployee,setWorkflowSelectedEmployee] = useState<any>(null);
+  const [workflowEmployeePickerOpen,setWorkflowEmployeePickerOpen] = useState(false);
+  const [workflowBulkManager,setWorkflowBulkManager] = useState("");
+  const [workflowBulkManagerSearch,setWorkflowBulkManagerSearch] = useState("");
+  const [workflowBulkManagerPickerOpen,setWorkflowBulkManagerPickerOpen] = useState(false);
+  const [workflowBulkEmployeeSearch,setWorkflowBulkEmployeeSearch] = useState("");
+  const [workflowBulkSelectedEmployees,setWorkflowBulkSelectedEmployees] = useState<string[]>([]);
   const [workflowBranch,setWorkflowBranch] = useState("NAQIL");
   const [workflowManager,setWorkflowManager] = useState("");
   const [workflowApproverRole,setWorkflowApproverRole] = useState<"SERVICES_ADMIN"|"REQUEST_AUDITOR">("SERVICES_ADMIN");
   const [workflowApproverEmployee,setWorkflowApproverEmployee] = useState("");
-  const [workflowPicker,setWorkflowPicker] = useState<null|"employee"|"manager"|"bulkManager"|"bulkEmployees">(null);
-  const [workflowPickerSearch,setWorkflowPickerSearch] = useState("");
-  const [workflowBulkManager,setWorkflowBulkManager] = useState("");
-  const [workflowBulkEmployees,setWorkflowBulkEmployees] = useState<string[]>([]);
   const [employeesRows,setEmployeesRows] = useState<any[]>([]);
   const [employeeSearch,setEmployeeSearch] = useState("");
   const [selectedEmployeeRecord,setSelectedEmployeeRecord] = useState<any>(null);
   const [editEmployeeJobTitle,setEditEmployeeJobTitle] = useState("");
-  const [editEmployeeDepartment,setEditEmployeeDepartment] = useState("");
   const [editEmployeeActive,setEditEmployeeActive] = useState(true);
 
   const questions = selectedSurvey?.questions || [];
@@ -377,7 +378,7 @@ export default function App() {
       throw new Error("لا تملك صلاحية عرض ملفات الموظفين.");
     const {data,error}=await supabase
       .from("employees")
-      .select("id,employee_number,employee_name,job_title,department_name,is_active")
+      .select("id,employee_number,employee_name,job_title,is_active")
       .order("employee_number",{ascending:true})
       .limit(1000);
     if(error) throw error;
@@ -410,7 +411,6 @@ export default function App() {
     try{
       const {data:updatedRows,error}=await supabase.from("employees").update({
         job_title:editEmployeeJobTitle.trim()||null,
-        department_name:editEmployeeDepartment.trim()||null,
         is_active:editEmployeeActive
       }).eq("id",selectedEmployeeRecord.id).select("id");
       if(error) throw error;
@@ -427,7 +427,6 @@ export default function App() {
     const q=employeeSearch.trim().toLowerCase();
     return !q || String(r.employee_number||"").toLowerCase().includes(q) ||
       String(r.employee_name||"").toLowerCase().includes(q) ||
-      String(r.department_name||"").toLowerCase().includes(q) ||
       String(r.job_title||"").toLowerCase().includes(q);
   }).slice(0,100);
   const activeEmployeesCount=employeesRows.filter((r:any)=>r.is_active===true).length;
@@ -468,19 +467,27 @@ export default function App() {
     finally{setBusy(false);}
   };
 
-  const saveBulkEmployeeWorkflowAssignments = async () => {
-    if(!workflowBulkManager || !workflowBranch || !workflowBulkEmployees.length){Alert.alert("بيانات ناقصة","اختر المدير والفرع وموظفاً واحداً على الأقل.");return;}
-    setBusy(true);
-    try{
-      const {data,error}=await supabase.rpc("set_employee_workflow_assignments",{
-        p_employee_numbers:workflowBulkEmployees,p_branch_code:workflowBranch,p_manager_employee_number:workflowBulkManager
-      });
-      if(error) throw error;
-      await loadWorkflowManagementData();
-      setWorkflowBulkEmployees([]);
-      Alert.alert("تم الحفظ",`تم حفظ التعيينات الجماعية بنجاح. عدد الموظفين: ${Number(data?.count ?? workflowBulkEmployees.length)}.`);
-    }catch(e:any){Alert.alert("تعذر حفظ التعيينات الجماعية",errText(e));}
-    finally{setBusy(false);}
+  const saveBulkWorkflowAssignments = async () => {
+    const numbers=Array.from(new Set(workflowBulkSelectedEmployees.map(x=>String(x).trim()).filter(Boolean)));
+    if(!workflowBulkManager){Alert.alert("اختر المدير","حدد المدير المباشر أولاً.");return;}
+    if(!workflowBranch){Alert.alert("حدد الفرع","اختر الفرع الذي ستسند إليه المجموعة.");return;}
+    if(!numbers.length){Alert.alert("حدد الموظفين","اختر موظفاً واحداً على الأقل.");return;}
+    Alert.alert("تأكيد التعيين الجماعي",`سيتم إسناد ${numbers.length} موظفاً إلى المدير المحدد. هل تريد المتابعة؟`,[
+      {text:"إلغاء",style:"cancel"},
+      {text:"تأكيد",onPress:async()=>{
+        setBusy(true);
+        try{
+          const {data,error}=await supabase.rpc("set_employee_workflow_assignments",{
+            p_employee_numbers:numbers,p_branch_code:workflowBranch,p_manager_employee_number:workflowBulkManager
+          });
+          if(error) throw error;
+          setWorkflowBulkSelectedEmployees([]);
+          await loadWorkflowManagementData();
+          Alert.alert("تم التعيين",`تم حفظ تعيين ${Number(data?.count)||numbers.length} موظفاً للمدير المحدد.`);
+        }catch(e:any){Alert.alert("تعذر التعيين الجماعي",errText(e));}
+        finally{setBusy(false);}
+      }}
+    ]);
   };
 
   const changeManagerRole = async (person:any, enabled:boolean) => {
@@ -513,13 +520,14 @@ export default function App() {
     const q=workflowSearch.trim().toLowerCase();
     return !q || employeeNoOf(r).toLowerCase().includes(q) || employeeNameOf(r).toLowerCase().includes(q);
   });
-  const pickerSource = workflowPicker === "manager" || workflowPicker === "bulkManager" ? workflowData.managers : workflowData.employees;
-  const filteredPickerRows = pickerSource.filter((r:any)=>{
-    const q=workflowPickerSearch.trim().toLowerCase();
+  const filteredBulkEmployees=workflowData.employees.filter((r:any)=>{
+    const q=workflowBulkEmployeeSearch.trim().toLowerCase();
     return !q || employeeNoOf(r).toLowerCase().includes(q) || employeeNameOf(r).toLowerCase().includes(q);
   });
-  const openWorkflowPicker = (kind:NonNullable<typeof workflowPicker>) => { setWorkflowPickerSearch(""); setWorkflowPicker(kind); };
-  const toggleBulkEmployee = (no:string) => setWorkflowBulkEmployees(prev=>prev.includes(no)?prev.filter(x=>x!==no):[...prev,no]);
+  const filteredBulkManagers=workflowData.managers.filter((r:any)=>{
+    const q=workflowBulkManagerSearch.trim().toLowerCase();
+    return !q || employeeNoOf(r).toLowerCase().includes(q) || employeeNameOf(r).toLowerCase().includes(q);
+  });
   const managerNumbers=new Set(workflowData.managers.map((r:any)=>employeeNoOf(r)));
 
   const reset = () => {setScreen("home");setSelectedSurvey(null);setAnswers({});setReason("");setResult(null);};
@@ -623,16 +631,15 @@ export default function App() {
           <Metric title="الموظفون النشطون" value={String(activeEmployeesCount)}/>
           <Metric title="غير النشطين" value={String(inactiveEmployeesCount)}/>
         </View>
-        <Field label="البحث عن موظف" value={employeeSearch} onChangeText={setEmployeeSearch} placeholder="الاسم أو الرقم أو القسم أو المسمى"/>
+        <Field label="البحث عن موظف" value={employeeSearch} onChangeText={setEmployeeSearch} placeholder="الاسم أو الرقم الوظيفي أو المسمى"/>
         <Text style={s.sub}>يعرض التطبيق أول 100 نتيجة مطابقة. اضغط على الموظف لعرض بياناته.</Text>
         {filteredEmployees.map((r:any)=><Pressable key={String(r.id)} onPress={()=>{
           setSelectedEmployeeRecord(r);
           setEditEmployeeJobTitle(String(r.job_title||""));
-          setEditEmployeeDepartment(String(r.department_name||""));
           setEditEmployeeActive(r.is_active===true);
         }} style={[s.responseCard,selectedEmployeeRecord?.id===r.id&&{borderColor:C.primary,backgroundColor:C.pale}]}>
           <Text style={s.responseTitle}>{r.employee_name||"بدون اسم"} — {r.employee_number}</Text>
-          <Text style={s.smallMuted}>{r.department_name||"القسم غير محدد"} | {r.job_title||"المسمى غير محدد"}</Text>
+          <Text style={s.smallMuted}>{r.job_title||"المسمى الوظيفي غير محدد"}</Text>
           <Text style={[s.status,{color:r.is_active===true?C.success:C.primary}]}>{r.is_active===true?"نشط":"غير نشط"}</Text>
         </Pressable>)}
         {!filteredEmployees.length&&<Text style={s.empty}>لا توجد نتائج مطابقة للبحث.</Text>}
@@ -643,7 +650,6 @@ export default function App() {
         <View style={s.readonly}><Text style={s.label}>اسم الموظف</Text><Text style={s.readonlyText}>{selectedEmployeeRecord.employee_name||"—"}</Text></View>
         <View style={s.readonly}><Text style={s.label}>الرقم الوظيفي</Text><Text style={s.readonlyText}>{selectedEmployeeRecord.employee_number}</Text></View>
         {systemAdmin||permissions.EMPLOYEES_UPDATE ? <>
-          <Field label="القسم" value={editEmployeeDepartment} onChangeText={setEditEmployeeDepartment} placeholder="اسم القسم"/>
           <Field label="المسمى الوظيفي" value={editEmployeeJobTitle} onChangeText={setEditEmployeeJobTitle} placeholder="المسمى الوظيفي"/>
           <Pressable onPress={()=>setEditEmployeeActive(v=>!v)} style={s.toggle}>
             <Text style={s.label}>حالة ملف الموظف</Text>
@@ -657,27 +663,36 @@ export default function App() {
 
     {screen==="workflow" && systemAdmin && <ScrollView contentContainerStyle={s.container}>
       <View style={s.hero}><Text style={s.heroTitle}>إدارة مسارات الموافقات</Text><Text style={s.heroSub}>إعداد المدير المباشر ومسؤولي الخدمات والمراجعة حسب الفرع</Text></View>
-      <View style={s.card}><Text style={s.title}>1. تعيين مدير مباشر لموظف</Text><Text style={s.sub}>جميع الموظفين النشطين متاحون في قائمة منسدلة قابلة للبحث، دون حد أقصى للنتائج. إجمالي الموظفين المحملين: {workflowData.employees.length}.</Text>
-        <Btn title={workflowSelectedEmployee?`${employeeNameOf(workflowSelectedEmployee)} — ${employeeNoOf(workflowSelectedEmployee)}`:"اختر الموظف من القائمة"} secondary onPress={()=>openWorkflowPicker("employee")}/>
+      <View style={s.card}><Text style={s.title}>1. تعيين المدير المباشر لموظف واحد</Text><Text style={s.sub}>ابحث بالاسم أو الرقم الوظيفي، ثم اختر الموظف من القائمة المنسدلة. البحث يشمل جميع الموظفين النشطين المحملين من قاعدة البيانات.</Text>
+        <Pressable style={s.dropdownButton} onPress={()=>setWorkflowEmployeePickerOpen(v=>!v)}><Text style={s.dropdownButtonText}>{workflowSelectedEmployee?`${employeeNameOf(workflowSelectedEmployee)} — ${employeeNoOf(workflowSelectedEmployee)}`:"اضغط لاختيار الموظف"}</Text><Text style={s.dropdownArrow}>{workflowEmployeePickerOpen?"▲":"▼"}</Text></Pressable>
+        {workflowEmployeePickerOpen&&<View style={s.dropdownPanel}><TextInput value={workflowSearch} onChangeText={setWorkflowSearch} style={s.input} placeholder="ابحث بالاسم أو الرقم الوظيفي" placeholderTextColor="#9AA3AD" textAlign="right"/><Text style={s.smallMuted}>نتائج البحث: {filteredWorkflowEmployees.length} موظف</Text><ScrollView nestedScrollEnabled style={s.dropdownList} keyboardShouldPersistTaps="handled">{filteredWorkflowEmployees.map((r:any)=>{
+          const no=employeeNoOf(r); const selected=employeeNoOf(workflowSelectedEmployee)===no;
+          const currentManager=String(pick(r,["manager_employee_number","manager_number"],""));
+          const currentBranch=String(pick(r,["branch_code"],""));
+          return <Pressable key={no} onPress={()=>{setWorkflowSelectedEmployee(r);setWorkflowManager(currentManager);if(currentBranch)setWorkflowBranch(currentBranch);setWorkflowEmployeePickerOpen(false);}} style={[s.dropdownOption,selected&&s.dropdownOptionActive]}><Text style={[s.dropdownOptionText,selected&&{color:C.dark,fontWeight:"800"}]}>{employeeNameOf(r)} — {no}</Text></Pressable>;
+        })}{!filteredWorkflowEmployees.length&&<Text style={s.empty}>لا توجد نتائج مطابقة.</Text>}</ScrollView></View>}
         {workflowSelectedEmployee&&<View style={s.selectedPanel}><Text style={s.label}>الموظف المحدد: {employeeNameOf(workflowSelectedEmployee)} ({employeeNoOf(workflowSelectedEmployee)})</Text>
           <Text style={s.label}>الفرع</Text><View style={s.chips}>{workflowData.branches.map((b:any)=><Pressable key={branchCodeOf(b)} onPress={()=>setWorkflowBranch(branchCodeOf(b))} style={[s.chip,workflowBranch===branchCodeOf(b)&&s.chipActive]}><Text style={[s.chipText,workflowBranch===branchCodeOf(b)&&s.white]}>{branchNameOf(b)}</Text></Pressable>)}</View>
-          <Text style={s.label}>المدير المباشر</Text>
-          <Btn title={workflowData.managers.find((m:any)=>employeeNoOf(m)===workflowManager)?`${employeeNameOf(workflowData.managers.find((m:any)=>employeeNoOf(m)===workflowManager))} — ${workflowManager}`:"اختر المدير المباشر"} secondary onPress={()=>openWorkflowPicker("manager")}/>
+          <Text style={s.label}>المدير المباشر</Text><View style={s.chips}>{workflowData.managers.map((m:any)=><Pressable key={employeeNoOf(m)} onPress={()=>setWorkflowManager(employeeNoOf(m))} style={[s.chip,workflowManager===employeeNoOf(m)&&s.chipActive]}><Text style={[s.chipText,workflowManager===employeeNoOf(m)&&s.white]}>{employeeNameOf(m)} ({employeeNoOf(m)})</Text></Pressable>)}</View>
           <Btn title="حفظ تعيين الموظف" disabled={busy} onPress={saveEmployeeWorkflowAssignment}/>
         </View>}
       </View>
-      <View style={s.card}><Text style={s.title}>2. تعيين عدة موظفين لمدير واحد</Text><Text style={s.sub}>اختر المدير أولاً، ثم حدد الموظفين المطلوب إلحاقهم به. يمكنك البحث أو تحديد جميع الموظفين.</Text>
-        <Btn title={workflowBulkManager?`${employeeNameOf(workflowData.managers.find((m:any)=>employeeNoOf(m)===workflowBulkManager)||{})} — ${workflowBulkManager}`:"اختر المدير المباشر"} secondary onPress={()=>openWorkflowPicker("bulkManager")}/>
-        <Text style={s.label}>الفرع</Text><View style={s.chips}>{workflowData.branches.map((b:any)=><Pressable key={branchCodeOf(b)} onPress={()=>setWorkflowBranch(branchCodeOf(b))} style={[s.chip,workflowBranch===branchCodeOf(b)&&s.chipActive]}><Text style={[s.chipText,workflowBranch===branchCodeOf(b)&&s.white]}>{branchNameOf(b)}</Text></Pressable>)}</View>
-        <Btn title={`اختيار الموظفين (${workflowBulkEmployees.length} محدد)`} secondary onPress={()=>openWorkflowPicker("bulkEmployees")}/>
-        <Btn title="حفظ تعيينات الموظفين المحددين" disabled={busy||!workflowBulkEmployees.length} onPress={saveBulkEmployeeWorkflowAssignments}/>
+      <View style={s.card}><Text style={s.title}>2. إسناد مجموعة موظفين إلى مدير مباشر</Text><Text style={s.sub}>اختر المدير أولاً، ثم ابحث عن الموظفين وحددهم دفعة واحدة. يمكنك تحديد كل نتائج البحث أو إلغاء تحديدها. لا يقتصر الاختيار على أول عدد من الموظفين.</Text>
+        <Text style={s.label}>المدير المباشر</Text>
+        <Pressable style={s.dropdownButton} onPress={()=>setWorkflowBulkManagerPickerOpen(v=>!v)}><Text style={s.dropdownButtonText}>{workflowBulkManager?(()=>{const m=workflowData.managers.find((x:any)=>employeeNoOf(x)===workflowBulkManager);return m?`${employeeNameOf(m)} — ${workflowBulkManager}`:workflowBulkManager;})():"اختر المدير المباشر"}</Text><Text style={s.dropdownArrow}>{workflowBulkManagerPickerOpen?"▲":"▼"}</Text></Pressable>
+        {workflowBulkManagerPickerOpen&&<View style={s.dropdownPanel}><TextInput value={workflowBulkManagerSearch} onChangeText={setWorkflowBulkManagerSearch} style={s.input} placeholder="ابحث عن المدير بالاسم أو الرقم" placeholderTextColor="#9AA3AD" textAlign="right"/><ScrollView nestedScrollEnabled style={s.dropdownList} keyboardShouldPersistTaps="handled">{filteredBulkManagers.map((m:any)=><Pressable key={employeeNoOf(m)} onPress={()=>{setWorkflowBulkManager(employeeNoOf(m));setWorkflowBulkManagerPickerOpen(false);}} style={[s.dropdownOption,workflowBulkManager===employeeNoOf(m)&&s.dropdownOptionActive]}><Text style={s.dropdownOptionText}>{employeeNameOf(m)} — {employeeNoOf(m)}</Text></Pressable>)}{!filteredBulkManagers.length&&<Text style={s.empty}>لا يوجد مدير مطابق.</Text>}</ScrollView></View>}
+        <Text style={s.label}>فرع التعيين</Text><View style={s.chips}>{workflowData.branches.map((b:any)=><Pressable key={branchCodeOf(b)} onPress={()=>setWorkflowBranch(branchCodeOf(b))} style={[s.chip,workflowBranch===branchCodeOf(b)&&s.chipActive]}><Text style={[s.chipText,workflowBranch===branchCodeOf(b)&&s.white]}>{branchNameOf(b)}</Text></Pressable>)}</View>
+        <Text style={s.label}>البحث وتحديد الموظفين</Text><TextInput value={workflowBulkEmployeeSearch} onChangeText={setWorkflowBulkEmployeeSearch} style={s.input} placeholder="الاسم أو الرقم الوظيفي" placeholderTextColor="#9AA3AD" textAlign="right"/>
+        <View style={s.bulkActions}><Text style={s.smallMuted}>المحددون: {workflowBulkSelectedEmployees.length} من إجمالي {workflowData.employees.length}</Text><View style={s.bulkActionButtons}><Pressable onPress={()=>setWorkflowBulkSelectedEmployees(prev=>Array.from(new Set([...prev,...filteredBulkEmployees.map((r:any)=>employeeNoOf(r))])))} style={s.smallAction}><Text style={s.smallActionText}>تحديد نتائج البحث</Text></Pressable><Pressable onPress={()=>setWorkflowBulkSelectedEmployees(prev=>prev.filter(no=>!filteredBulkEmployees.some((r:any)=>employeeNoOf(r)===no)))} style={s.smallAction}><Text style={s.smallActionText}>إلغاء نتائج البحث</Text></Pressable><Pressable onPress={()=>setWorkflowBulkSelectedEmployees([])} style={s.smallAction}><Text style={s.smallActionText}>إلغاء الكل</Text></Pressable></View></View>
+        <ScrollView nestedScrollEnabled style={s.bulkEmployeeList} keyboardShouldPersistTaps="handled">{filteredBulkEmployees.map((r:any)=>{const no=employeeNoOf(r);const checked=workflowBulkSelectedEmployees.includes(no);return <Pressable key={no} onPress={()=>setWorkflowBulkSelectedEmployees(prev=>checked?prev.filter(x=>x!==no):[...prev,no])} style={s.bulkEmployeeRow}><View style={[s.checkboxBox,checked&&s.checkboxBoxActive]}><Text style={s.checkboxMark}>{checked?"✓":""}</Text></View><View style={{flex:1}}><Text style={s.dropdownOptionText}>{employeeNameOf(r)}</Text><Text style={s.smallMuted}>{no} | {String(pick(r,["branch_name"],"الفرع غير محدد"))}</Text></View></Pressable>;})}{!filteredBulkEmployees.length&&<Text style={s.empty}>لا توجد نتائج مطابقة.</Text>}</ScrollView>
+        <Btn title={`حفظ تعيين ${workflowBulkSelectedEmployees.length} موظفاً للمدير`} disabled={busy||!workflowBulkSelectedEmployees.length||!workflowBulkManager} onPress={saveBulkWorkflowAssignments}/>
       </View>
-      <View style={s.card}><Text style={s.title}>2. إدارة المديرين المباشرين</Text><Text style={s.sub}>اختر موظفاً من نتائج البحث أعلاه ثم أضف أو أزل عنه دور المدير المباشر. لا يمكن إزالة مدير لديه موظفون مرتبطون بتعيين نشط.</Text>
+      <View style={s.card}><Text style={s.title}>3. إدارة المديرين المباشرين</Text><Text style={s.sub}>اختر موظفاً من نتائج البحث أعلاه ثم أضف أو أزل عنه دور المدير المباشر. لا يمكن إزالة مدير لديه موظفون مرتبطون بتعيين نشط.</Text>
         {workflowSelectedEmployee&&<><Text style={s.body}>{employeeNameOf(workflowSelectedEmployee)} — {employeeNoOf(workflowSelectedEmployee)}</Text><Text style={s.status}>{managerNumbers.has(employeeNoOf(workflowSelectedEmployee))?"لديه حالياً دور مدير مباشر":"ليس لديه دور مدير مباشر"}</Text><Btn title={managerNumbers.has(employeeNoOf(workflowSelectedEmployee))?"إزالة دور المدير المباشر":"إضافة دور المدير المباشر"} secondary={!managerNumbers.has(employeeNoOf(workflowSelectedEmployee))} disabled={busy} onPress={()=>changeManagerRole(workflowSelectedEmployee,!managerNumbers.has(employeeNoOf(workflowSelectedEmployee)))}/></>}
         <Text style={s.sectionTitle}>المديرون المعتمدون حالياً</Text>
         {workflowData.managers.map((m:any)=><View key={employeeNoOf(m)} style={s.responseCard}><Text style={s.responseTitle}>{employeeNameOf(m)} — {employeeNoOf(m)}</Text></View>)}
       </View>
-      <View style={s.card}><Text style={s.title}>3. مسؤولو الخدمات والمراجعة حسب الفرع</Text><Text style={s.sub}>تغيير مسؤول المرحلة لا يغيّر تسلسل الموافقات: المدير المباشر ← الخدمات الإدارية ← المراجعة.</Text>
+      <View style={s.card}><Text style={s.title}>4. مسؤولو الخدمات والمراجعة حسب الفرع</Text><Text style={s.sub}>تغيير مسؤول المرحلة لا يغيّر تسلسل الموافقات: المدير المباشر ← الخدمات الإدارية ← المراجعة.</Text>
         <Text style={s.label}>الفرع</Text><View style={s.chips}>{workflowData.branches.map((b:any)=><Pressable key={branchCodeOf(b)} onPress={()=>setWorkflowBranch(branchCodeOf(b))} style={[s.chip,workflowBranch===branchCodeOf(b)&&s.chipActive]}><Text style={[s.chipText,workflowBranch===branchCodeOf(b)&&s.white]}>{branchNameOf(b)}</Text></Pressable>)}</View>
         <Text style={s.label}>مرحلة الموافقة</Text><View style={s.chips}><Pressable onPress={()=>setWorkflowApproverRole("SERVICES_ADMIN")} style={[s.chip,workflowApproverRole==="SERVICES_ADMIN"&&s.chipActive]}><Text style={[s.chipText,workflowApproverRole==="SERVICES_ADMIN"&&s.white]}>الخدمات الإدارية</Text></Pressable><Pressable onPress={()=>setWorkflowApproverRole("REQUEST_AUDITOR")} style={[s.chip,workflowApproverRole==="REQUEST_AUDITOR"&&s.chipActive]}><Text style={[s.chipText,workflowApproverRole==="REQUEST_AUDITOR"&&s.white]}>المراجعة</Text></Pressable></View>
         <Text style={s.label}>الموظف المسؤول الجديد</Text><Field label="الرقم الوظيفي للمسؤول" value={workflowApproverEmployee} onChangeText={setWorkflowApproverEmployee} keyboardType="numeric" placeholder="أدخل الرقم الوظيفي"/>
@@ -689,23 +704,6 @@ export default function App() {
       <Btn title="تحديث البيانات" secondary disabled={busy} onPress={async()=>{setBusy(true);try{await loadWorkflowManagementData();}catch(e:any){Alert.alert("تعذر التحديث",errText(e));}finally{setBusy(false);}}}/>
       <Btn title="العودة إلى خدمات النظام" secondary onPress={()=>setScreen("dashboard")}/>
     </ScrollView>}
-    <Modal visible={workflowPicker!==null} transparent animationType="slide" onRequestClose={()=>setWorkflowPicker(null)}>
-      <View style={s.modalBackdrop}><View style={s.modalCard}>
-        <Text style={s.title}>{workflowPicker==="employee"?"اختيار الموظف":workflowPicker==="manager"||workflowPicker==="bulkManager"?"اختيار المدير المباشر":"اختيار الموظفين"}</Text>
-        <TextInput value={workflowPickerSearch} onChangeText={setWorkflowPickerSearch} style={s.input} placeholder="ابحث بالاسم أو الرقم الوظيفي" placeholderTextColor="#9AA3AD" textAlign="right" autoFocus/>
-        {workflowPicker==="bulkEmployees"&&<View style={s.modalActions}>
-          <Pressable onPress={()=>setWorkflowBulkEmployees(workflowData.employees.map((r:any)=>employeeNoOf(r)).filter(Boolean))} style={s.modalAction}><Text style={s.chipText}>تحديد الكل ({workflowData.employees.length})</Text></Pressable>
-          <Pressable onPress={()=>setWorkflowBulkEmployees([])} style={s.modalAction}><Text style={s.chipText}>إلغاء التحديد</Text></Pressable>
-        </View>}
-        <ScrollView style={s.modalList} keyboardShouldPersistTaps="handled">
-          {filteredPickerRows.map((r:any)=>{const no=employeeNoOf(r);const selected=workflowPicker==="bulkEmployees"?workflowBulkEmployees.includes(no):workflowPicker==="employee"?employeeNoOf(workflowSelectedEmployee)===no:workflowPicker==="manager"?workflowManager===no:workflowBulkManager===no;return <Pressable key={no} onPress={()=>{if(workflowPicker==="employee"){setWorkflowSelectedEmployee(r);setWorkflowManager(String(pick(r,["manager_employee_number","manager_number"],"")));const bc=String(pick(r,["branch_code"],""));if(bc)setWorkflowBranch(bc);setWorkflowPicker(null);}else if(workflowPicker==="manager"){setWorkflowManager(no);setWorkflowPicker(null);}else if(workflowPicker==="bulkManager"){setWorkflowBulkManager(no);setWorkflowPicker(null);}else{toggleBulkEmployee(no);}}} style={[s.pickerRow,selected&&s.pickerRowSelected]}><Text style={[s.pickerCheck,selected&&{color:C.primary}]}>{selected?"☑":"□"}</Text><View style={{flex:1}}><Text style={s.responseTitle}>{employeeNameOf(r)} — {no}</Text><Text style={s.smallMuted}>{String(pick(r,["branch_name"],""))}</Text></View></Pressable>;})}
-          {!filteredPickerRows.length&&<Text style={s.empty}>لا توجد نتائج مطابقة.</Text>}
-        </ScrollView>
-        <Text style={s.sub}>عدد النتائج: {filteredPickerRows.length} من {pickerSource.length}{workflowPicker==="bulkEmployees"?` | المحدد: ${workflowBulkEmployees.length}`:""}</Text>
-        {workflowPicker==="bulkEmployees"&&<Btn title="اعتماد اختيار الموظفين" onPress={()=>setWorkflowPicker(null)}/>}
-        <Btn title="إغلاق" secondary onPress={()=>setWorkflowPicker(null)}/>
-      </View></View>
-    </Modal>
     {busy && <View pointerEvents="none" style={s.loading}><ActivityIndicator color={C.primary}/></View>}
   </SafeAreaView>;
 }
@@ -720,5 +718,5 @@ function AverageBar({title,value}:{title:string;value:number}){const v=Math.max(
 
 const s=StyleSheet.create({
  safe:{flex:1,backgroundColor:C.bg},container:{padding:16,paddingBottom:40},hero:{backgroundColor:C.primary,borderRadius:18,padding:22,marginBottom:16},heroTitle:{color:"#fff",fontSize:24,fontWeight:"800",textAlign:"right"},heroSub:{color:"#fff",fontSize:13,textAlign:"right",marginTop:8,lineHeight:21},
- card:{backgroundColor:"#fff",borderRadius:16,padding:17,marginBottom:15,borderWidth:1,borderColor:"#E7EAF0"},title:{fontSize:21,fontWeight:"800",color:C.text,textAlign:"right"},sub:{fontSize:12,color:C.muted,textAlign:"right",marginTop:5,marginBottom:12,lineHeight:20},body:{fontSize:15,color:C.text,textAlign:"right",lineHeight:25,marginVertical:12},field:{marginBottom:14},label:{fontSize:13,fontWeight:"700",color:C.text,textAlign:"right",marginBottom:7},input:{borderWidth:1,borderColor:C.border,borderRadius:10,backgroundColor:"#fff",padding:11,fontSize:14,color:C.text,minHeight:44},readonly:{marginBottom:13,alignItems:"flex-end"},readonlyText:{fontSize:15,color:C.dark,fontWeight:"700"},chips:{flexDirection:"row",flexWrap:"wrap",justifyContent:"flex-end",gap:7},chip:{borderWidth:1,borderColor:C.border,borderRadius:9,padding:9,backgroundColor:"#fff"},chipActive:{backgroundColor:C.primary,borderColor:C.primary},chipText:{fontSize:12,color:C.text},white:{color:"#fff"},btn:{backgroundColor:C.primary,borderRadius:10,paddingVertical:13,alignItems:"center",marginTop:8},btnText:{color:"#fff",fontWeight:"800",fontSize:14},btn2:{backgroundColor:"#fff",borderWidth:1,borderColor:C.border},btnText2:{color:C.dark},surveyCard:{borderWidth:1,borderColor:C.border,borderRadius:12,padding:13,marginTop:12},surveyTitle:{fontSize:16,fontWeight:"800",color:C.dark,textAlign:"right"},status:{fontSize:12,color:C.muted,textAlign:"right"},progress:{height:8,backgroundColor:"#E4E8ED",borderRadius:8,overflow:"hidden",marginTop:8},fill:{height:"100%",backgroundColor:C.primary},domain:{fontSize:17,fontWeight:"800",color:C.dark,textAlign:"right",marginVertical:10},qcard:{backgroundColor:"#fff",borderRadius:13,padding:14,marginBottom:11,borderWidth:1,borderColor:"#E7EAF0"},qno:{fontSize:12,fontWeight:"800",color:C.primary,textAlign:"right",marginBottom:6},question:{fontSize:14,fontWeight:"700",color:C.text,textAlign:"right",lineHeight:23,marginBottom:11},scale:{flexDirection:"row",flexWrap:"wrap",justifyContent:"flex-end",gap:6},scaleItem:{width:57,minHeight:60,borderWidth:1,borderColor:C.border,borderRadius:8,padding:5,alignItems:"center",justifyContent:"center"},active:{backgroundColor:C.primary,borderColor:C.primary},val:{fontSize:16,fontWeight:"800",color:C.dark},lbl:{fontSize:9,color:C.muted,textAlign:"center",marginTop:3},done:{alignSelf:"center",width:62,height:62,borderRadius:31,backgroundColor:"#E8F6EE",color:C.success,fontSize:42,fontWeight:"800",textAlign:"center",lineHeight:60,marginBottom:12},score:{flexDirection:"row-reverse",justifyContent:"space-between",padding:12,borderBottomWidth:1,borderBottomColor:"#EDF0F3"},scoreTitle:{color:C.text,fontSize:13},scoreVal:{fontWeight:"800",color:C.dark},total:{backgroundColor:C.pale,borderBottomWidth:0,marginTop:5,borderRadius:8},sectionTitle:{fontSize:16,fontWeight:"800",color:C.dark,textAlign:"right",marginTop:20,marginBottom:10},barWrap:{marginBottom:12},barHead:{flexDirection:"row-reverse",justifyContent:"space-between",marginBottom:5},barTitle:{fontSize:12,color:C.text,fontWeight:"700"},barValue:{fontSize:12,color:C.dark,fontWeight:"800"},barTrack:{height:10,backgroundColor:"#E8EBEF",borderRadius:8,overflow:"hidden"},barFill:{height:"100%",backgroundColor:C.primary,borderRadius:8},metrics:{flexDirection:"row",gap:10},metric:{flex:1,backgroundColor:C.pale,padding:13,borderRadius:10,alignItems:"center",marginBottom:10},metricValue:{fontSize:21,fontWeight:"800",color:C.dark},metricTitle:{fontSize:11,color:C.muted,marginTop:5},toggle:{flexDirection:"row-reverse",justifyContent:"space-between",alignItems:"center",padding:12,backgroundColor:C.bg,borderRadius:9},toggleValue:{fontWeight:"800",color:C.dark},exportRow:{flexDirection:"row-reverse",gap:8,marginBottom:12},exportBtn:{flex:1,padding:12,backgroundColor:C.pale,borderRadius:9,alignItems:"center"},exportText:{fontSize:12,fontWeight:"800",color:C.dark},responseCard:{borderWidth:1,borderColor:C.border,borderRadius:10,padding:12,marginTop:9},responseTitle:{fontWeight:"800",color:C.dark,textAlign:"right"},smallMuted:{fontSize:10,color:C.muted,textAlign:"right"},answerList:{borderTopWidth:1,borderTopColor:C.border,marginTop:10,paddingTop:7},answerLine:{paddingVertical:7,borderBottomWidth:1,borderBottomColor:"#F0F1F3"},answerText:{fontSize:12,color:C.text,textAlign:"right",lineHeight:19},answerValue:{fontSize:12,color:C.dark,fontWeight:"800",textAlign:"left",marginTop:3},empty:{textAlign:"center",color:C.muted,padding:15},selectedPanel:{marginTop:14,padding:12,borderRadius:10,backgroundColor:C.bg},modalBackdrop:{flex:1,backgroundColor:"rgba(0,0,0,0.45)",justifyContent:"center",padding:14},modalCard:{backgroundColor:"#fff",borderRadius:16,padding:16,maxHeight:"88%"},modalList:{maxHeight:420,marginTop:10},modalActions:{flexDirection:"row-reverse",justifyContent:"space-between",marginTop:10},modalAction:{padding:9,borderWidth:1,borderColor:C.border,borderRadius:8},pickerRow:{flexDirection:"row-reverse",alignItems:"center",gap:10,padding:12,borderBottomWidth:1,borderBottomColor:"#EDF0F3"},pickerRowSelected:{backgroundColor:C.pale},pickerCheck:{fontSize:22,color:C.muted},loading:{position:"absolute",top:8,right:8,backgroundColor:"#fff",padding:7,borderRadius:20}
+ card:{backgroundColor:"#fff",borderRadius:16,padding:17,marginBottom:15,borderWidth:1,borderColor:"#E7EAF0"},title:{fontSize:21,fontWeight:"800",color:C.text,textAlign:"right"},sub:{fontSize:12,color:C.muted,textAlign:"right",marginTop:5,marginBottom:12,lineHeight:20},body:{fontSize:15,color:C.text,textAlign:"right",lineHeight:25,marginVertical:12},field:{marginBottom:14},label:{fontSize:13,fontWeight:"700",color:C.text,textAlign:"right",marginBottom:7},input:{borderWidth:1,borderColor:C.border,borderRadius:10,backgroundColor:"#fff",padding:11,fontSize:14,color:C.text,minHeight:44},readonly:{marginBottom:13,alignItems:"flex-end"},readonlyText:{fontSize:15,color:C.dark,fontWeight:"700"},chips:{flexDirection:"row",flexWrap:"wrap",justifyContent:"flex-end",gap:7},chip:{borderWidth:1,borderColor:C.border,borderRadius:9,padding:9,backgroundColor:"#fff"},chipActive:{backgroundColor:C.primary,borderColor:C.primary},chipText:{fontSize:12,color:C.text},white:{color:"#fff"},btn:{backgroundColor:C.primary,borderRadius:10,paddingVertical:13,alignItems:"center",marginTop:8},btnText:{color:"#fff",fontWeight:"800",fontSize:14},btn2:{backgroundColor:"#fff",borderWidth:1,borderColor:C.border},btnText2:{color:C.dark},surveyCard:{borderWidth:1,borderColor:C.border,borderRadius:12,padding:13,marginTop:12},surveyTitle:{fontSize:16,fontWeight:"800",color:C.dark,textAlign:"right"},status:{fontSize:12,color:C.muted,textAlign:"right"},progress:{height:8,backgroundColor:"#E4E8ED",borderRadius:8,overflow:"hidden",marginTop:8},fill:{height:"100%",backgroundColor:C.primary},domain:{fontSize:17,fontWeight:"800",color:C.dark,textAlign:"right",marginVertical:10},qcard:{backgroundColor:"#fff",borderRadius:13,padding:14,marginBottom:11,borderWidth:1,borderColor:"#E7EAF0"},qno:{fontSize:12,fontWeight:"800",color:C.primary,textAlign:"right",marginBottom:6},question:{fontSize:14,fontWeight:"700",color:C.text,textAlign:"right",lineHeight:23,marginBottom:11},scale:{flexDirection:"row",flexWrap:"wrap",justifyContent:"flex-end",gap:6},scaleItem:{width:57,minHeight:60,borderWidth:1,borderColor:C.border,borderRadius:8,padding:5,alignItems:"center",justifyContent:"center"},active:{backgroundColor:C.primary,borderColor:C.primary},val:{fontSize:16,fontWeight:"800",color:C.dark},lbl:{fontSize:9,color:C.muted,textAlign:"center",marginTop:3},done:{alignSelf:"center",width:62,height:62,borderRadius:31,backgroundColor:"#E8F6EE",color:C.success,fontSize:42,fontWeight:"800",textAlign:"center",lineHeight:60,marginBottom:12},score:{flexDirection:"row-reverse",justifyContent:"space-between",padding:12,borderBottomWidth:1,borderBottomColor:"#EDF0F3"},scoreTitle:{color:C.text,fontSize:13},scoreVal:{fontWeight:"800",color:C.dark},total:{backgroundColor:C.pale,borderBottomWidth:0,marginTop:5,borderRadius:8},sectionTitle:{fontSize:16,fontWeight:"800",color:C.dark,textAlign:"right",marginTop:20,marginBottom:10},barWrap:{marginBottom:12},barHead:{flexDirection:"row-reverse",justifyContent:"space-between",marginBottom:5},barTitle:{fontSize:12,color:C.text,fontWeight:"700"},barValue:{fontSize:12,color:C.dark,fontWeight:"800"},barTrack:{height:10,backgroundColor:"#E8EBEF",borderRadius:8,overflow:"hidden"},barFill:{height:"100%",backgroundColor:C.primary,borderRadius:8},metrics:{flexDirection:"row",gap:10},metric:{flex:1,backgroundColor:C.pale,padding:13,borderRadius:10,alignItems:"center",marginBottom:10},metricValue:{fontSize:21,fontWeight:"800",color:C.dark},metricTitle:{fontSize:11,color:C.muted,marginTop:5},toggle:{flexDirection:"row-reverse",justifyContent:"space-between",alignItems:"center",padding:12,backgroundColor:C.bg,borderRadius:9},toggleValue:{fontWeight:"800",color:C.dark},exportRow:{flexDirection:"row-reverse",gap:8,marginBottom:12},exportBtn:{flex:1,padding:12,backgroundColor:C.pale,borderRadius:9,alignItems:"center"},exportText:{fontSize:12,fontWeight:"800",color:C.dark},responseCard:{borderWidth:1,borderColor:C.border,borderRadius:10,padding:12,marginTop:9},responseTitle:{fontWeight:"800",color:C.dark,textAlign:"right"},smallMuted:{fontSize:10,color:C.muted,textAlign:"right"},answerList:{borderTopWidth:1,borderTopColor:C.border,marginTop:10,paddingTop:7},answerLine:{paddingVertical:7,borderBottomWidth:1,borderBottomColor:"#F0F1F3"},answerText:{fontSize:12,color:C.text,textAlign:"right",lineHeight:19},answerValue:{fontSize:12,color:C.dark,fontWeight:"800",textAlign:"left",marginTop:3},empty:{textAlign:"center",color:C.muted,padding:15},selectedPanel:{marginTop:14,padding:12,borderRadius:10,backgroundColor:C.bg},dropdownButton:{minHeight:48,borderWidth:1,borderColor:C.border,borderRadius:10,backgroundColor:"#fff",padding:12,flexDirection:"row-reverse",alignItems:"center",justifyContent:"space-between",marginBottom:8},dropdownButtonText:{fontSize:13,color:C.text,textAlign:"right",flex:1},dropdownArrow:{color:C.dark,fontWeight:"800",marginLeft:8},dropdownPanel:{borderWidth:1,borderColor:C.border,borderRadius:10,padding:9,backgroundColor:"#FAFBFC",marginBottom:10},dropdownList:{maxHeight:230,marginTop:6},dropdownOption:{paddingVertical:11,paddingHorizontal:8,borderBottomWidth:1,borderBottomColor:"#E9EDF1"},dropdownOptionActive:{backgroundColor:C.pale},dropdownOptionText:{fontSize:13,color:C.text,textAlign:"right"},bulkActions:{marginTop:12,marginBottom:8},bulkActionButtons:{flexDirection:"row-reverse",flexWrap:"wrap",gap:7,marginTop:8},smallAction:{borderWidth:1,borderColor:C.border,borderRadius:8,paddingVertical:7,paddingHorizontal:9,backgroundColor:"#fff"},smallActionText:{fontSize:11,color:C.dark,fontWeight:"700"},bulkEmployeeList:{maxHeight:300,borderWidth:1,borderColor:C.border,borderRadius:10,paddingHorizontal:8,marginTop:5},bulkEmployeeRow:{flexDirection:"row-reverse",alignItems:"center",gap:10,paddingVertical:10,borderBottomWidth:1,borderBottomColor:"#EDF0F3"},checkboxBox:{width:23,height:23,borderRadius:5,borderWidth:1,borderColor:C.border,alignItems:"center",justifyContent:"center",backgroundColor:"#fff"},checkboxBoxActive:{backgroundColor:C.primary,borderColor:C.primary},checkboxMark:{color:"#fff",fontWeight:"900"},loading:{position:"absolute",top:8,right:8,backgroundColor:"#fff",padding:7,borderRadius:20}
 });

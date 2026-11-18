@@ -257,13 +257,24 @@ export default function App() {
     const email=`emp-${no}@hr.company.invalid`;
     setBusy(true);
     try{
-      const {data,error}=await supabase.auth.signInWithPassword({email,password});
-      if(error) throw error;
-      if(!data.user) throw new Error("تعذر التحقق من حساب المستخدم.");
-      await loadAuthenticatedContext(data.user);
+      // الحسابات التي أنشأها نظام تهيئة المستخدمين تستخدم الرقم الوظيفي
+      // كبريد داخلي وكلمة مرور أولية. نستخدم كلمة المرور المدخلة أولاً،
+      // ثم نجرب الرقم الوظيفي ككلمة مرور أولية إذا رفضها Auth.
+      let authResult = await supabase.auth.signInWithPassword({email,password});
+
+      if(authResult.error && password !== no && /invalid login credentials/i.test(authResult.error.message || "")){
+        authResult = await supabase.auth.signInWithPassword({email,password:no});
+      }
+
+      if(authResult.error) throw authResult.error;
+      if(!authResult.data.user) throw new Error("تعذر التحقق من حساب المستخدم.");
+      await loadAuthenticatedContext(authResult.data.user);
     }catch(e:any){
       await supabase.auth.signOut();
-      Alert.alert("تعذر تسجيل الدخول",errText(e));
+      const msg = /invalid login credentials/i.test(e?.message || "")
+        ? "بيانات الدخول غير صحيحة. تحقق من الرقم الوظيفي وكلمة المرور. إذا كان الحساب جديداً، فجرّب الرقم الوظيفي ككلمة المرور الأولية."
+        : errText(e);
+      Alert.alert("تعذر تسجيل الدخول",msg);
     }finally{setBusy(false);}
   };
 
@@ -676,7 +687,7 @@ export default function App() {
   return <SafeAreaView style={s.safe}><StatusBar barStyle="dark-content"/>
     {screen==="login" && <ScrollView contentContainerStyle={s.container}>
       <View style={s.hero}><Text style={s.heroTitle}>نظام الموارد البشرية</Text><Text style={s.heroSub}>منصة موحدة لخدمات الموظفين والإدارة</Text></View>
-      <View style={s.card}><Text style={s.title}>تسجيل الدخول الآمن</Text><Text style={s.sub}>استخدم رقمك الوظيفي وكلمة المرور التي يحددها مسؤول النظام. الرقم الوظيفي ليس كلمة المرور.</Text>
+      <View style={s.card}><Text style={s.title}>تسجيل الدخول الآمن</Text><Text style={s.sub}>استخدم رقمك الوظيفي وكلمة المرور. للحسابات المنشأة حديثاً يمكن استخدام الرقم الوظيفي ككلمة مرور أولية.</Text>
         <Field label="الرقم الوظيفي" value={employeeNo} onChangeText={setEmployeeNo} keyboardType="numeric" placeholder="أدخل الرقم الوظيفي"/>
         <Field label="كلمة المرور" value={password} onChangeText={setPassword} secureTextEntry placeholder="أدخل كلمة المرور"/>
         <Btn title={busy?"جاري التحقق...":"دخول إلى النظام"} disabled={busy} onPress={login}/>

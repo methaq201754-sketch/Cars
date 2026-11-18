@@ -478,7 +478,7 @@ export default function App() {
   };
 
   const openWorkflowManagement = async () => {
-    if(!systemAdmin){Alert.alert("غير مصرح","إدارة مسارات الموافقات متاحة لمدير النظام فقط.");return;}
+    if(!systemAdmin){Alert.alert("غير مصرح","مسارات الموافقات متاحة لمدير النظام فقط.");return;}
     setBusy(true);
     try{await loadWorkflowManagementData();setWorkflowSearch("");setWorkflowSelectedEmployee(null);setScreen("workflow");}
     catch(e:any){Alert.alert("تعذر تحميل إدارة الموافقات",errText(e));}
@@ -551,9 +551,9 @@ export default function App() {
 
   const moduleConfig:any={
     assets:{title:"الأصول والعهد",table:"assets",lookup:"asset_categories",view:"ASSETS_VIEW",access:["ASSETS_VIEW","ASSETS_CREATE","ASSETS_UPDATE","ASSETS_ASSIGN","ASSETS_MAINTAIN","ASSETS_MOVE","ASSETS_DISPOSE"],create:"ASSETS_CREATE",label:"الأصل",name:"asset_name"},
-    grievances:{title:"الشكاوى والتظلمات والتحقيقات",table:"grievances",lookup:"grievance_categories",view:"GRIEVANCES_VIEW",access:["GRIEVANCES_VIEW","GRIEVANCES_CREATE","GRIEVANCES_MANAGE","GRIEVANCES_INVESTIGATE","GRIEVANCES_DECIDE"],create:"GRIEVANCES_CREATE",label:"الشكوى",name:"subject"},
-    suggestions:{title:"الأفكار والمقترحات",table:"suggestions",lookup:"suggestion_categories",view:"IDEAS_VIEW",access:["IDEAS_VIEW","IDEAS_CREATE","IDEAS_REVIEW","IDEAS_IMPLEMENT"],create:"IDEAS_CREATE",label:"المقترح",name:"title"},
-    services:{title:"الخدمات الإدارية والتصاريح",table:"admin_service_requests",lookup:"admin_service_types",view:"SERVICES_VIEW",access:["SERVICES_VIEW","SERVICES_CREATE","SERVICES_MANAGE"],create:"SERVICES_CREATE",label:"الطلب",name:"title"}
+    grievances:{title:"الشكاوى والتظلمات",table:"grievances",lookup:"grievance_categories",view:"GRIEVANCES_VIEW",access:["GRIEVANCES_VIEW","GRIEVANCES_CREATE","GRIEVANCES_MANAGE","GRIEVANCES_INVESTIGATE","GRIEVANCES_DECIDE"],create:"GRIEVANCES_CREATE",label:"الشكوى",name:"subject"},
+    suggestions:{title:"المقترحات",table:"suggestions",lookup:"suggestion_categories",view:"IDEAS_VIEW",access:["IDEAS_VIEW","IDEAS_CREATE","IDEAS_REVIEW","IDEAS_IMPLEMENT"],create:"IDEAS_CREATE",label:"المقترح",name:"title"},
+    services:{title:"الخدمات الإدارية",table:"admin_service_requests",lookup:"admin_service_types",view:"SERVICES_VIEW",access:["SERVICES_VIEW","SERVICES_CREATE","SERVICES_MANAGE"],create:"SERVICES_CREATE",label:"الطلب",name:"title"}
   };
   const openModule=async(key:"assets"|"grievances"|"suggestions"|"services"|"reports")=>{
     const allowed=systemAdmin || (key==="reports"?permissions.REPORTS_VIEW:moduleConfig[key].access.some((code:string)=>permissions[code]));
@@ -595,27 +595,62 @@ export default function App() {
         const {data:rows,error:loadError}=await supabase.from("assets").select("*").order("created_at",{ascending:false}).limit(250);
         if(loadError) throw loadError;setModuleRows(rows||[]);return;
       }else if(activeModule==="grievances"){
-        table="grievances";
-        payload={category_id:moduleCategory||null,grievance_type:moduleType||"GENERAL",subject:moduleTitle.trim(),description:moduleDescription.trim(),requested_action:moduleExtra.trim()||null,complainant_employee_id:null,submitted_by:user.id,submission_date:new Date().toISOString(),confidentiality_level:"CONFIDENTIAL",is_anonymous:false,priority:modulePriority,status:"SUBMITTED",current_assignee:null,created_by:user.id,updated_by:user.id};
+        if(!moduleCategory) throw new Error("اختر تصنيف الشكوى.");
+        const r=await supabase.rpc("create_grievance",{
+          p_category_id:moduleCategory,
+          p_grievance_type:moduleType||"GENERAL",
+          p_subject:moduleTitle.trim(),
+          p_description:moduleDescription.trim(),
+          p_requested_action:moduleExtra.trim()||null,
+          p_confidentiality_level:"normal",
+          p_is_anonymous:false,
+          p_priority:modulePriority
+        });
+        if(r.error) throw r.error;
+        Alert.alert("تم الحفظ","تم تقديم الشكوى بنجاح.");
+        resetModuleForm();
+        await refreshModule();
+        return;
       }else if(activeModule==="suggestions"){
-        table="suggestions";
-        payload={category_id:moduleCategory||null,suggestion_type:moduleType||"GENERAL",title:moduleTitle.trim(),description:moduleDescription.trim(),expected_benefit:moduleExtra.trim()||null,requested_action:null,submitted_by:user.id,proposer_employee_id:null,department_id:null,priority:modulePriority,status:"SUBMITTED",current_assignee:null,created_by:user.id,updated_by:user.id};
+        if(!moduleCategory) throw new Error("اختر تصنيف المقترح.");
+        const r=await supabase.rpc("create_suggestion",{
+          p_category_code:String(pick(moduleLookups.find((x:any)=>String(x.id)===String(moduleCategory)),["category_code"],moduleType||"GENERAL")),
+          p_title:moduleTitle.trim(),
+          p_description:moduleDescription.trim(),
+          p_expected_benefit:moduleExtra.trim()||null,
+          p_requested_action:null,
+          p_proposer_employee_id:employee?.id||null,
+          p_department_id:employee?.department_id||null,
+          p_priority:modulePriority
+        });
+        if(r.error) throw r.error;
+        Alert.alert("تم الحفظ","تم تقديم المقترح بنجاح.");
+        resetModuleForm();
+        await refreshModule();
+        return;
       }else if(activeModule==="services"){
-        table="admin_service_requests";
         if(!moduleCategory) throw new Error("اختر نوع الخدمة.");
         const serviceType=moduleLookups.find((x:any)=>String(x.id)===String(moduleCategory));
-        const branch=String(pick(serviceType,["branch_code"],"NAQIL"));
-        payload={service_type_id:moduleCategory,service_code:String(pick(serviceType,["service_code","type_code"],"OTHER")),title:moduleTitle.trim(),description:moduleDescription.trim(),requester_user_id:user.id,requester_employee_number:employee?.employee_number||null,branch_code:branch,manager_employee_number:null,services_approver_employee_number:null,review_approver_employee_number:null,current_assignee:null,current_stage:"MANAGER_REVIEW",status:"SUBMITTED",priority:modulePriority,requested_date:new Date().toISOString().slice(0,10),required_date:moduleExtra.trim()||null,created_by:user.id,updated_by:user.id};
+        const serviceCode=String(pick(serviceType,["service_code"],"OTHER"));
+        const branch=String(pick(serviceType,["branch_code"],"ADMINISTRATION"));
+        const r=await supabase.rpc("create_admin_service_request",{
+          p_service_code:serviceCode,
+          p_title:moduleTitle.trim(),
+          p_description:moduleDescription.trim(),
+          p_requester_employee_number:String(employee?.employee_number||""),
+          p_branch_code:branch,
+          p_manager_employee_number:"",
+          p_services_approver_employee_number:"",
+          p_review_approver_employee_number:"",
+          p_priority:modulePriority,
+          p_required_date:moduleExtra.trim()||null
+        });
+        if(r.error) throw r.error;
+        Alert.alert("تم الحفظ","تم تقديم طلب الخدمة بنجاح.");
+        resetModuleForm();
+        await refreshModule();
+        return;
       }else return;
-      const {data,error}=await supabase.from(table).insert(payload).select("*").single();
-      if(error) throw error;
-      Alert.alert("تم الحفظ",`تم تسجيل ${moduleConfig[activeModule].label} بنجاح.`);
-      resetModuleForm();
-      const cfg=moduleConfig[activeModule];
-      const {data:rows,error:loadError}=await supabase.from(cfg.table).select("*").order("created_at",{ascending:false}).limit(250);
-      if(loadError) throw loadError;
-      setModuleRows(rows||[]);
-      setModuleSelected(data);
     }catch(e:any){Alert.alert("تعذر حفظ السجل",errText(e));}
     finally{setBusy(false);}
   };
@@ -685,27 +720,25 @@ export default function App() {
   const logout = async () => {await supabase.auth.signOut();setEmployee(null);setEmployeeNo("");setPassword("");setCatalog([]);setSelectedSurvey(null);setAdminRows([]);setRoleCodes([]);setPermissions({});setSystemAdmin(false);setEmployeesRows([]);setSelectedEmployeeRecord(null);setScreen("login");};
 
   return <SafeAreaView style={s.safe}><StatusBar barStyle="dark-content"/>
-    {screen==="login" && <ScrollView contentContainerStyle={s.container}>
-      <View style={s.hero}><Text style={s.heroTitle}>نظام الموارد البشرية</Text><Text style={s.heroSub}>منصة موحدة لخدمات الموظفين والإدارة</Text></View>
-      <View style={s.card}><Text style={s.title}>تسجيل الدخول الآمن</Text><Text style={s.sub}>استخدم رقمك الوظيفي وكلمة المرور. للحسابات المنشأة حديثاً يمكن استخدام الرقم الوظيفي ككلمة مرور أولية.</Text>
-        <Field label="الرقم الوظيفي" value={employeeNo} onChangeText={setEmployeeNo} keyboardType="numeric" placeholder="أدخل الرقم الوظيفي"/>
-        <Field label="كلمة المرور" value={password} onChangeText={setPassword} secureTextEntry placeholder="أدخل كلمة المرور"/>
-        <Btn title={busy?"جاري التحقق...":"دخول إلى النظام"} disabled={busy} onPress={login}/>
-        <Text style={s.sub}>إذا لم يكن لديك حساب، راجع مسؤول النظام لإنشاء الحساب وربطه بملفك الوظيفي.</Text>
+    {screen==="login" && <ScrollView contentContainerStyle={[s.container,{justifyContent:"center",flexGrow:1}]}>
+      <View style={s.card}>
+        <Field label="اسم المستخدم" value={employeeNo} onChangeText={setEmployeeNo} keyboardType="numeric" placeholder="اسم المستخدم"/>
+        <Field label="كلمة المرور" value={password} onChangeText={setPassword} secureTextEntry placeholder="كلمة المرور"/>
+        <Btn title={busy?"جاري التحقق...":"دخول"} disabled={busy} onPress={login}/>
       </View>
     </ScrollView>}
 
     {screen==="dashboard" && <ScrollView contentContainerStyle={s.container}>
       <View style={s.hero}><Text style={s.heroTitle}>مرحباً {employee?.employee_name}</Text><Text style={s.heroSub}>الرقم الوظيفي: {employee?.employee_number}</Text></View>
       <View style={s.card}><Text style={s.title}>خدمات النظام</Text><Text style={s.sub}>تظهر الوحدات وفق الصلاحيات الممنوحة لحسابك.</Text>
-        {(systemAdmin||permissions.EMPLOYEES_VIEW)&&<View style={s.surveyCard}><Text style={s.surveyTitle}>ملف الموظفين</Text><Text style={s.sub}>عرض ملفات الموظفين والبحث فيها وتحديث القسم والمسمى الوظيفي وحالة التفعيل للمخولين.</Text><Btn title="فتح إدارة الموظفين" onPress={openEmployeeManagement}/></View>}
-        {(systemAdmin||permissions.SURVEYS_VIEW||permissions.SURVEYS_MANAGE)&&<View style={s.surveyCard}><Text style={s.surveyTitle}>الاستبيانات</Text><Text style={s.sub}>استبيان رضا الموظفين وتقييم الخدمات، مع إدارة الفترات والنتائج للمخولين.</Text><Btn title="فتح وحدة الاستبيانات" onPress={async()=>{setBusy(true);try{await loadCatalog();setScreen(employee?.is_survey_admin?"admin":"home");if(employee?.is_survey_admin) await loadAdmin(adminSurveyId,employee?.employee_number);}catch(e:any){Alert.alert("تعذر تحميل الاستبيانات",errText(e));}finally{setBusy(false);}}}/></View>}
-        {(systemAdmin||["ASSETS_VIEW","ASSETS_CREATE","ASSETS_UPDATE","ASSETS_ASSIGN","ASSETS_MAINTAIN","ASSETS_MOVE","ASSETS_DISPOSE"].some(k=>permissions[k]))&&<View style={s.surveyCard}><Text style={s.surveyTitle}>الأصول والعهد</Text><Text style={s.sub}>سجل الأصول، التصنيفات، الحالة، ومتابعة العهد.</Text><Btn title="فتح وحدة الأصول والعهد" onPress={()=>openModule("assets")}/></View>}
-        {(systemAdmin||["GRIEVANCES_VIEW","GRIEVANCES_CREATE","GRIEVANCES_MANAGE","GRIEVANCES_INVESTIGATE","GRIEVANCES_DECIDE"].some(k=>permissions[k]))&&<View style={s.surveyCard}><Text style={s.surveyTitle}>الشكاوى والتظلمات والتحقيقات</Text><Text style={s.sub}>تسجيل الشكاوى ومتابعة حالتها وبيانات التحقيق.</Text><Btn title="فتح وحدة الشكاوى والتحقيقات" onPress={()=>openModule("grievances")}/></View>}
-        {(systemAdmin||["IDEAS_VIEW","IDEAS_CREATE","IDEAS_REVIEW","IDEAS_IMPLEMENT"].some(k=>permissions[k]))&&<View style={s.surveyCard}><Text style={s.surveyTitle}>الأفكار والمقترحات</Text><Text style={s.sub}>تسجيل المقترحات ومتابعة التقييم والتنفيذ.</Text><Btn title="فتح وحدة الأفكار والمقترحات" onPress={()=>openModule("suggestions")}/></View>}
-        {(systemAdmin||["SERVICES_VIEW","SERVICES_CREATE","SERVICES_MANAGE"].some(k=>permissions[k]))&&<View style={s.surveyCard}><Text style={s.surveyTitle}>الخدمات الإدارية والتصاريح</Text><Text style={s.sub}>تقديم طلبات الخدمات والتصاريح ومتابعة مراحلها.</Text><Btn title="فتح وحدة الخدمات الإدارية" onPress={()=>openModule("services")}/></View>}
-        {(systemAdmin||permissions.REPORTS_VIEW)&&<View style={s.surveyCard}><Text style={s.surveyTitle}>التقارير ومؤشرات الأداء</Text><Text style={s.sub}>مؤشرات الأداء والطلبات المعلقة وحالات الوحدات.</Text><Btn title="فتح التقارير ومؤشرات الأداء" onPress={()=>openModule("reports")}/></View>}
-        {systemAdmin&&<View style={s.surveyCard}><Text style={s.surveyTitle}>إدارة مسارات الموافقات</Text><Text style={s.sub}>تعيين المدير المباشر لكل موظف، وإدارة المديرين، وتحديد مسؤولي الخدمات والمراجعة حسب الفرع.</Text><Btn title="فتح إدارة مسارات الموافقات" onPress={openWorkflowManagement}/></View>}
+        {(systemAdmin||permissions.EMPLOYEES_VIEW)&&<View style={s.surveyCard}><Text style={s.surveyTitle}>الموظفون</Text><Text style={s.sub}>عرض ملفات الموظفين والبحث فيها وتحديث القسم والمسمى الوظيفي وحالة التفعيل للمخولين.</Text><Btn title="الموظفون" onPress={openEmployeeManagement}/></View>}
+        {(systemAdmin||permissions.SURVEYS_VIEW||permissions.SURVEYS_MANAGE)&&<View style={s.surveyCard}><Text style={s.surveyTitle}>الاستبيانات</Text><Text style={s.sub}>استبيان رضا الموظفين وتقييم الخدمات، مع إدارة الفترات والنتائج للمخولين.</Text><Btn title="الاستبيانات" onPress={async()=>{setBusy(true);try{await loadCatalog();setScreen(employee?.is_survey_admin?"admin":"home");if(employee?.is_survey_admin) await loadAdmin(adminSurveyId,employee?.employee_number);}catch(e:any){Alert.alert("تعذر تحميل الاستبيانات",errText(e));}finally{setBusy(false);}}}/></View>}
+        {(systemAdmin||["ASSETS_VIEW","ASSETS_CREATE","ASSETS_UPDATE","ASSETS_ASSIGN","ASSETS_MAINTAIN","ASSETS_MOVE","ASSETS_DISPOSE"].some(k=>permissions[k]))&&<View style={s.surveyCard}><Text style={s.surveyTitle}>الأصول والعهد</Text><Text style={s.sub}>سجل الأصول، التصنيفات، الحالة، ومتابعة العهد.</Text><Btn title="الأصول والعهد" onPress={()=>openModule("assets")}/></View>}
+        {(systemAdmin||["GRIEVANCES_VIEW","GRIEVANCES_CREATE","GRIEVANCES_MANAGE","GRIEVANCES_INVESTIGATE","GRIEVANCES_DECIDE"].some(k=>permissions[k]))&&<View style={s.surveyCard}><Text style={s.surveyTitle}>الشكاوى والتظلمات</Text><Text style={s.sub}>تسجيل الشكاوى ومتابعة حالتها وبيانات التحقيق.</Text><Btn title="الشكاوى والتظلمات" onPress={()=>openModule("grievances")}/></View>}
+        {(systemAdmin||["IDEAS_VIEW","IDEAS_CREATE","IDEAS_REVIEW","IDEAS_IMPLEMENT"].some(k=>permissions[k]))&&<View style={s.surveyCard}><Text style={s.surveyTitle}>المقترحات</Text><Text style={s.sub}>تسجيل المقترحات ومتابعة التقييم والتنفيذ.</Text><Btn title="فتح وحدة المقترحات" onPress={()=>openModule("suggestions")}/></View>}
+        {(systemAdmin||["SERVICES_VIEW","SERVICES_CREATE","SERVICES_MANAGE"].some(k=>permissions[k]))&&<View style={s.surveyCard}><Text style={s.surveyTitle}>الخدمات الإدارية</Text><Text style={s.sub}>تقديم طلبات الخدمات والتصاريح ومتابعة مراحلها.</Text><Btn title="الخدمات الإدارية" onPress={()=>openModule("services")}/></View>}
+        {(systemAdmin||permissions.REPORTS_VIEW)&&<View style={s.surveyCard}><Text style={s.surveyTitle}>التقارير</Text><Text style={s.sub}>مؤشرات الأداء والطلبات المعلقة وحالات الوحدات.</Text><Btn title="فتح التقارير" onPress={()=>openModule("reports")}/></View>}
+        {systemAdmin&&<View style={s.surveyCard}><Text style={s.surveyTitle}>مسارات الموافقات</Text><Text style={s.sub}>تعيين المدير المباشر لكل موظف، وإدارة المديرين، وتحديد مسؤولي الخدمات والمراجعة حسب الفرع.</Text><Btn title="فتح مسارات الموافقات" onPress={openWorkflowManagement}/></View>}
         <Btn title="تسجيل الخروج" secondary onPress={logout}/>
       </View>
     </ScrollView>}
@@ -813,7 +846,7 @@ export default function App() {
     </ScrollView>}
 
     {screen==="module" && <ScrollView contentContainerStyle={s.container}>
-      <View style={s.hero}><Text style={s.heroTitle}>{activeModule==="reports"?"التقارير ومؤشرات الأداء":moduleConfig[activeModule].title}</Text><Text style={s.heroSub}>عرض البيانات المسجلة وإضافة سجلات جديدة وفق صلاحيات حسابك</Text></View>
+      <View style={s.hero}><Text style={s.heroTitle}>{activeModule==="reports"?"التقارير":moduleConfig[activeModule].title}</Text><Text style={s.heroSub}>عرض البيانات المسجلة وإضافة سجلات جديدة وفق صلاحيات حسابك</Text></View>
       {activeModule==="reports" ? <>
         {Object.entries(reportRows).map(([view,rows])=><View key={view} style={s.card}><Text style={s.title}>{({v_hr_dashboard_summary:"ملخص لوحة الموارد البشرية",v_hr_pending_approval_dashboard:"الموافقات المعلقة",v_admin_service_kpi:"مؤشرات الخدمات الإدارية",v_suggestions_kpi:"مؤشرات المقترحات",v_grievances_kpi:"مؤشرات الشكاوى",v_grievance_investigation_kpi:"مؤشرات التحقيقات",v_admin_service_status:"حالات طلبات الخدمات",v_suggestions_status:"حالات المقترحات",v_grievances_status:"حالات الشكاوى"} as any)[view]||view}</Text>{rows.length?rows.slice(0,30).map((r:any,i:number)=><View key={i} style={s.responseCard}><Text style={s.answerText}>{Object.entries(r).map(([k,v])=>`${k}: ${v??"—"}`).join(" | ")}</Text></View>):<Text style={s.empty}>لا توجد بيانات متاحة أو لا توجد صلاحية لقراءة هذا التقرير.</Text>}</View>)}
       </> : <>
@@ -845,7 +878,7 @@ export default function App() {
     </ScrollView>}
 
     {screen==="workflow" && systemAdmin && <ScrollView contentContainerStyle={s.container}>
-      <View style={s.hero}><Text style={s.heroTitle}>إدارة مسارات الموافقات</Text><Text style={s.heroSub}>إعداد المدير المباشر ومسؤولي الخدمات والمراجعة حسب الفرع</Text></View>
+      <View style={s.hero}><Text style={s.heroTitle}>مسارات الموافقات</Text><Text style={s.heroSub}>إعداد المدير المباشر ومسؤولي الخدمات والمراجعة حسب الفرع</Text></View>
       <View style={s.card}><Text style={s.title}>1. تعيين المدير المباشر لموظف واحد</Text><Text style={s.sub}>ابحث بالاسم أو الرقم الوظيفي، ثم اختر الموظف من القائمة المنسدلة. البحث يشمل جميع الموظفين النشطين المحملين من قاعدة البيانات.</Text>
         <Pressable style={s.dropdownButton} onPress={()=>setWorkflowEmployeePickerOpen(v=>!v)}><Text style={s.dropdownButtonText}>{workflowSelectedEmployee?`${employeeNameOf(workflowSelectedEmployee)} — ${employeeNoOf(workflowSelectedEmployee)}`:"اضغط لاختيار الموظف"}</Text><Text style={s.dropdownArrow}>{workflowEmployeePickerOpen?"▲":"▼"}</Text></Pressable>
         {workflowEmployeePickerOpen&&<View style={s.dropdownPanel}><TextInput value={workflowSearch} onChangeText={setWorkflowSearch} style={s.input} placeholder="ابحث بالاسم أو الرقم الوظيفي" placeholderTextColor="#9AA3AD" textAlign="right"/><Text style={s.smallMuted}>نتائج البحث: {filteredWorkflowEmployees.length} موظف</Text><ScrollView nestedScrollEnabled style={s.dropdownList} keyboardShouldPersistTaps="handled">{filteredWorkflowEmployees.map((r:any)=>{

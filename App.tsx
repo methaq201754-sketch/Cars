@@ -1,5 +1,6 @@
 import "react-native-url-polyfill/auto";
 import React, { useEffect, useMemo, useState } from "react";
+import { Ionicons } from "@expo/vector-icons";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import {
   Alert, KeyboardAvoidingView, Platform, Pressable, SafeAreaView,
@@ -54,7 +55,7 @@ const branchCodeOf = (r:any) => String(pick(r,["branch_code","code"]));
 const branchNameOf = (r:any) => String(pick(r,["branch_name","name","branch"]));
 
 export default function App() {
-  const [screen,setScreen] = useState<"login"|"dashboard"|"home"|"employee"|"survey"|"result"|"admin"|"workflow"|"employees"|"module">("login");
+  const [screen,setScreen] = useState<"login"|"dashboard"|"home"|"employee"|"survey"|"result"|"admin"|"workflow"|"employees"|"module"|"settings"|"notifications">("login");
   const [employeeNo,setEmployeeNo] = useState("");
   const [password,setPassword] = useState("");
   const [employee,setEmployee] = useState<Employee|null>(null);
@@ -566,13 +567,22 @@ export default function App() {
         setReportRows(Object.fromEntries(entries));
       }else{
         const cfg=moduleConfig[key];
-        const [main,lookup]=await Promise.all([
-          supabase.from(cfg.table).select("*").order("created_at",{ascending:false}).limit(250),
-          supabase.from(cfg.lookup).select("*").limit(200)
-        ]);
-        if(main.error) throw main.error;
+        let mainData:any[]=[];
+        if(key==="services") {
+          // Do not query admin_service_requests directly: the current RLS policy
+          // on that table is recursive. The SECURITY DEFINER RPC reads the table
+          // without re-entering the recursive policy.
+          const main=await supabase.rpc("get_admin_service_requests_for_user");
+          if(main.error) throw main.error;
+          mainData=Array.isArray(main.data)?main.data:[];
+        } else {
+          const main=await supabase.from(cfg.table).select("*").order("created_at",{ascending:false}).limit(250);
+          if(main.error) throw main.error;
+          mainData=main.data||[];
+        }
+        const lookup=await supabase.from(cfg.lookup).select("*").limit(200);
         if(lookup.error && lookup.error.code!=="42P01") throw lookup.error;
-        setModuleRows(main.data||[]);setModuleLookups(lookup.data||[]);
+        setModuleRows(mainData);setModuleLookups(lookup.data||[]);
       }
       setScreen("module");
     }catch(e:any){Alert.alert("تعذر فتح الوحدة",errText(e));}
@@ -632,16 +642,16 @@ export default function App() {
         if(!moduleCategory) throw new Error("اختر نوع الخدمة.");
         const serviceType=moduleLookups.find((x:any)=>String(x.id)===String(moduleCategory));
         const serviceCode=String(pick(serviceType,["service_code"],"OTHER"));
-        const branch=String(pick(serviceType,["branch_code"],"ADMINISTRATION"));
+        const branch=String(moduleType||"ADMINISTRATION");
         const r=await supabase.rpc("create_admin_service_request",{
           p_service_code:serviceCode,
           p_title:moduleTitle.trim(),
           p_description:moduleDescription.trim(),
           p_requester_employee_number:String(employee?.employee_number||""),
           p_branch_code:branch,
-          p_manager_employee_number:"",
-          p_services_approver_employee_number:"",
-          p_review_approver_employee_number:"",
+          p_manager_employee_number:null,
+          p_services_approver_employee_number:null,
+          p_review_approver_employee_number:null,
           p_priority:modulePriority,
           p_required_date:moduleExtra.trim()||null
         });
@@ -728,14 +738,14 @@ export default function App() {
       </View>
     </ScrollView>}
 
-    {screen==="dashboard" && <ScrollView contentContainerStyle={s.container}>
+    {screen==="dashboard" && <ScrollView contentContainerStyle={[s.container,{paddingBottom:105}]}>
       <View style={s.hero}><Text style={s.heroTitle}>مرحباً {employee?.employee_name}</Text><Text style={s.heroSub}>الرقم الوظيفي: {employee?.employee_number}</Text></View>
       <View style={s.card}><Text style={s.title}>خدمات النظام</Text><Text style={s.sub}>تظهر الوحدات وفق الصلاحيات الممنوحة لحسابك.</Text>
         {(systemAdmin||permissions.EMPLOYEES_VIEW)&&<View style={s.surveyCard}><Text style={s.surveyTitle}>الموظفون</Text><Text style={s.sub}>عرض ملفات الموظفين والبحث فيها وتحديث القسم والمسمى الوظيفي وحالة التفعيل للمخولين.</Text><Btn title="الموظفون" onPress={openEmployeeManagement}/></View>}
         {(systemAdmin||permissions.SURVEYS_VIEW||permissions.SURVEYS_MANAGE)&&<View style={s.surveyCard}><Text style={s.surveyTitle}>الاستبيانات</Text><Text style={s.sub}>استبيان رضا الموظفين وتقييم الخدمات، مع إدارة الفترات والنتائج للمخولين.</Text><Btn title="الاستبيانات" onPress={async()=>{setBusy(true);try{await loadCatalog();setScreen(employee?.is_survey_admin?"admin":"home");if(employee?.is_survey_admin) await loadAdmin(adminSurveyId,employee?.employee_number);}catch(e:any){Alert.alert("تعذر تحميل الاستبيانات",errText(e));}finally{setBusy(false);}}}/></View>}
         {(systemAdmin||["ASSETS_VIEW","ASSETS_CREATE","ASSETS_UPDATE","ASSETS_ASSIGN","ASSETS_MAINTAIN","ASSETS_MOVE","ASSETS_DISPOSE"].some(k=>permissions[k]))&&<View style={s.surveyCard}><Text style={s.surveyTitle}>الأصول والعهد</Text><Text style={s.sub}>سجل الأصول، التصنيفات، الحالة، ومتابعة العهد.</Text><Btn title="الأصول والعهد" onPress={()=>openModule("assets")}/></View>}
         {(systemAdmin||["GRIEVANCES_VIEW","GRIEVANCES_CREATE","GRIEVANCES_MANAGE","GRIEVANCES_INVESTIGATE","GRIEVANCES_DECIDE"].some(k=>permissions[k]))&&<View style={s.surveyCard}><Text style={s.surveyTitle}>الشكاوى والتظلمات</Text><Text style={s.sub}>تسجيل الشكاوى ومتابعة حالتها وبيانات التحقيق.</Text><Btn title="الشكاوى والتظلمات" onPress={()=>openModule("grievances")}/></View>}
-        {(systemAdmin||["IDEAS_VIEW","IDEAS_CREATE","IDEAS_REVIEW","IDEAS_IMPLEMENT"].some(k=>permissions[k]))&&<View style={s.surveyCard}><Text style={s.surveyTitle}>المقترحات</Text><Text style={s.sub}>تسجيل المقترحات ومتابعة التقييم والتنفيذ.</Text><Btn title="فتح وحدة المقترحات" onPress={()=>openModule("suggestions")}/></View>}
+        {(systemAdmin||["IDEAS_VIEW","IDEAS_CREATE","IDEAS_REVIEW","IDEAS_IMPLEMENT"].some(k=>permissions[k]))&&<View style={s.surveyCard}><Text style={s.surveyTitle}>المقترحات</Text><Text style={s.sub}>تسجيل المقترحات ومتابعة التقييم والتنفيذ.</Text><Btn title="المقترحات" onPress={()=>openModule("suggestions")}/></View>}
         {(systemAdmin||["SERVICES_VIEW","SERVICES_CREATE","SERVICES_MANAGE"].some(k=>permissions[k]))&&<View style={s.surveyCard}><Text style={s.surveyTitle}>الخدمات الإدارية</Text><Text style={s.sub}>تقديم طلبات الخدمات والتصاريح ومتابعة مراحلها.</Text><Btn title="الخدمات الإدارية" onPress={()=>openModule("services")}/></View>}
         {(systemAdmin||permissions.REPORTS_VIEW)&&<View style={s.surveyCard}><Text style={s.surveyTitle}>التقارير</Text><Text style={s.sub}>مؤشرات الأداء والطلبات المعلقة وحالات الوحدات.</Text><Btn title="فتح التقارير" onPress={()=>openModule("reports")}/></View>}
         {systemAdmin&&<View style={s.surveyCard}><Text style={s.surveyTitle}>مسارات الموافقات</Text><Text style={s.sub}>تعيين المدير المباشر لكل موظف، وإدارة المديرين، وتحديد مسؤولي الخدمات والمراجعة حسب الفرع.</Text><Btn title="فتح مسارات الموافقات" onPress={openWorkflowManagement}/></View>}
@@ -743,7 +753,7 @@ export default function App() {
       </View>
     </ScrollView>}
 
-    {screen==="home" && <ScrollView contentContainerStyle={s.container}>
+    {screen==="home" && <ScrollView contentContainerStyle={[s.container,{paddingBottom:105}]}>
       <View style={s.hero}><Text style={s.heroTitle}>مرحباً {employee?.employee_name}</Text><Text style={s.heroSub}>الرقم الوظيفي: {employee?.employee_number}</Text></View>
       <View style={s.card}><Text style={s.title}>الاستبيانات المتاحة</Text><Text style={s.sub}>اختر الاستبيان الذي ترغب في المشاركة فيه.</Text>
         {catalog.filter(x=>x.is_active).map(sv=><View key={sv.id} style={s.surveyCard}><Text style={s.surveyTitle}>{sv.survey_name}</Text><Text style={s.sub}>{sv.description||`${sv.questions?.length||0} سؤالاً`}</Text><Text style={s.status}>{dateOpen(sv.period)?"مفتوح للمشاركة":"مغلق حالياً"}</Text><Btn title="فتح الاستبيان" secondary={!dateOpen(sv.period)} onPress={()=>chooseSurvey(sv)}/></View>)}
@@ -752,7 +762,7 @@ export default function App() {
       </View>
     </ScrollView>}
 
-    {screen==="employee" && <ScrollView contentContainerStyle={s.container}>
+    {screen==="employee" && <ScrollView contentContainerStyle={[s.container,{paddingBottom:105}]}>
       <View style={s.card}><Text style={s.title}>بيانات الموظف</Text><Text style={s.sub}>{selectedSurvey?.survey_name}</Text>
         <View style={s.readonly}><Text style={s.label}>اسم الموظف</Text><Text style={s.readonlyText}>{employee?.employee_name}</Text></View>
         <View style={s.readonly}><Text style={s.label}>الرقم الوظيفي</Text><Text style={s.readonlyText}>{employee?.employee_number}</Text></View>
@@ -766,7 +776,7 @@ export default function App() {
     </ScrollView>}
 
     {screen==="survey" && <KeyboardAvoidingView style={{flex:1}} behavior={Platform.OS==="ios"?"padding":undefined}>
-      <ScrollView contentContainerStyle={s.container}>
+      <ScrollView contentContainerStyle={[s.container,{paddingBottom:105}]}>
         <View style={s.card}><Text style={s.title}>{selectedSurvey?.survey_name}</Text><Text style={s.sub}>أجبت عن {Object.keys(answers).length} من {questions.length} — {progress}%</Text><View style={s.progress}><View style={[s.fill,{width:`${progress}%`}]}/></View></View>
         {Array.from(new Set<number>(questions.map(q=>q.domain_no))).sort((a,b)=>a-b).map(d=>{
           const group=questions.filter(q=>q.domain_no===d); const domainName=group[0]?.domain_name||`المجال ${d}`;
@@ -780,9 +790,9 @@ export default function App() {
       </ScrollView>
     </KeyboardAvoidingView>}
 
-    {screen==="result" && <ScrollView contentContainerStyle={s.container}><View style={s.card}><Text style={s.done}>✓</Text><Text style={s.title}>تم تسجيل الاستبيان بنجاح</Text><Text style={s.body}>تم حفظ إجاباتك وحساب متوسطات المجالات والنتيجة الإجمالية.</Text>{result&&<><Score title="المجال الأول" v={result.d1}/><Score title="المجال الثاني" v={result.d2}/><Score title="المجال الثالث" v={result.d3}/><Score title="النتيجة الإجمالية" v={result.total} total/></>}<Btn title="إنهاء" onPress={reset}/></View></ScrollView>}
+    {screen==="result" && <ScrollView contentContainerStyle={[s.container,{paddingBottom:105}]}><View style={s.card}><Text style={s.done}>✓</Text><Text style={s.title}>تم تسجيل الاستبيان بنجاح</Text><Text style={s.body}>تم حفظ إجاباتك وحساب متوسطات المجالات والنتيجة الإجمالية.</Text>{result&&<><Score title="المجال الأول" v={result.d1}/><Score title="المجال الثاني" v={result.d2}/><Score title="المجال الثالث" v={result.d3}/><Score title="النتيجة الإجمالية" v={result.total} total/></>}<Btn title="إنهاء" onPress={reset}/></View></ScrollView>}
 
-    {screen==="admin" && <ScrollView contentContainerStyle={s.container}>
+    {screen==="admin" && <ScrollView contentContainerStyle={[s.container,{paddingBottom:105}]}>
       <View style={s.hero}><Text style={s.heroTitle}>لوحة إدارة الاستبيانات</Text><Text style={s.heroSub}>{employee?.employee_name} — مدير النظام</Text></View>
       <View style={s.card}><Text style={s.title}>اختيار الاستبيان</Text><View style={s.chips}>{catalog.map(sv=><Pressable key={sv.id} onPress={()=>{setAdminSurveyId(sv.id);setPeriodStart(sv.period?.start_at||"");setPeriodEnd(sv.period?.end_at||"");setPeriodEnabled(!!sv.period?.is_enabled);loadAdmin(sv.id);}} style={[s.chip,adminSurveyId===sv.id&&s.chipActive]}><Text style={[s.chipText,adminSurveyId===sv.id&&s.white]}>{sv.survey_name}</Text></Pressable>)}</View>
         <Text style={s.sectionTitle}>مؤشرات المشاركة</Text><View style={s.metrics}><Metric title="عدد المشاركات" value={String(adminStats.count)}/><Metric title="المتوسط العام" value={`${adminStats.overall.toFixed(2)} / 5`}/></View>
@@ -806,7 +816,7 @@ export default function App() {
       </View>
       <Btn title="تسجيل الخروج" secondary onPress={logout}/>
     </ScrollView>}
-    {screen==="employees" && <ScrollView contentContainerStyle={s.container}>
+    {screen==="employees" && <ScrollView contentContainerStyle={[s.container,{paddingBottom:105}]}>
       <View style={s.hero}><Text style={s.heroTitle}>إدارة ملفات الموظفين</Text><Text style={s.heroSub}>عرض وبحث وتحديث بيانات الموظفين وفق الصلاحيات الممنوحة</Text></View>
       <View style={s.card}>
         <Text style={s.title}>ملخص السجل الوظيفي</Text>
@@ -845,7 +855,7 @@ export default function App() {
       <Btn title="العودة إلى خدمات النظام" secondary onPress={()=>setScreen("dashboard")}/>
     </ScrollView>}
 
-    {screen==="module" && <ScrollView contentContainerStyle={s.container}>
+    {screen==="module" && <ScrollView contentContainerStyle={[s.container,{paddingBottom:105}]}>
       <View style={s.hero}><Text style={s.heroTitle}>{activeModule==="reports"?"التقارير":moduleConfig[activeModule].title}</Text><Text style={s.heroSub}>عرض البيانات المسجلة وإضافة سجلات جديدة وفق صلاحيات حسابك</Text></View>
       {activeModule==="reports" ? <>
         {Object.entries(reportRows).map(([view,rows])=><View key={view} style={s.card}><Text style={s.title}>{({v_hr_dashboard_summary:"ملخص لوحة الموارد البشرية",v_hr_pending_approval_dashboard:"الموافقات المعلقة",v_admin_service_kpi:"مؤشرات الخدمات الإدارية",v_suggestions_kpi:"مؤشرات المقترحات",v_grievances_kpi:"مؤشرات الشكاوى",v_grievance_investigation_kpi:"مؤشرات التحقيقات",v_admin_service_status:"حالات طلبات الخدمات",v_suggestions_status:"حالات المقترحات",v_grievances_status:"حالات الشكاوى"} as any)[view]||view}</Text>{rows.length?rows.slice(0,30).map((r:any,i:number)=><View key={i} style={s.responseCard}><Text style={s.answerText}>{Object.entries(r).map(([k,v])=>`${k}: ${v??"—"}`).join(" | ")}</Text></View>):<Text style={s.empty}>لا توجد بيانات متاحة أو لا توجد صلاحية لقراءة هذا التقرير.</Text>}</View>)}
@@ -859,7 +869,7 @@ export default function App() {
         {moduleShowForm&&<View style={s.card}><Text style={s.title}>تسجيل {moduleConfig[activeModule].label} جديد</Text>
           {activeModule==="assets"&&<><Field label="رمز الأصل" value={moduleExtra} onChangeText={setModuleExtra} placeholder="مثال: AST-0001"/><Text style={s.label}>تصنيف الأصل</Text><View style={s.chips}>{moduleLookups.map((x:any)=><Pressable key={String(x.id)} onPress={()=>setModuleCategory(String(x.id))} style={[s.chip,moduleCategory===String(x.id)&&s.chipActive]}><Text style={[s.chipText,moduleCategory===String(x.id)&&s.white]}>{String(pick(x,["category_name","name","category_code"],"تصنيف"))}</Text></Pressable>)}</View></>}
           {(activeModule==="grievances"||activeModule==="suggestions")&&<><Field label="النوع" value={moduleType} onChangeText={setModuleType} placeholder="GENERAL"/><Text style={s.label}>التصنيف</Text><View style={s.chips}>{moduleLookups.map((x:any)=><Pressable key={String(x.id)} onPress={()=>setModuleCategory(String(x.id))} style={[s.chip,moduleCategory===String(x.id)&&s.chipActive]}><Text style={[s.chipText,moduleCategory===String(x.id)&&s.white]}>{String(pick(x,["category_name","name","category_code"],"تصنيف"))}</Text></Pressable>)}</View></>}
-          {activeModule==="services"&&<><Text style={s.label}>نوع الخدمة</Text><View style={s.chips}>{moduleLookups.map((x:any)=><Pressable key={String(x.id)} onPress={()=>setModuleCategory(String(x.id))} style={[s.chip,moduleCategory===String(x.id)&&s.chipActive]}><Text style={[s.chipText,moduleCategory===String(x.id)&&s.white]}>{String(pick(x,["type_name","service_name","name","service_code"],"خدمة"))}</Text></Pressable>)}</View></>}
+          {activeModule==="services"&&<><Text style={s.label}>نوع الخدمة / التصريح</Text><View style={s.chips}>{moduleLookups.map((x:any)=><Pressable key={String(x.id)} onPress={()=>setModuleCategory(String(x.id))} style={[s.chip,moduleCategory===String(x.id)&&s.chipActive]}><Text style={[s.chipText,moduleCategory===String(x.id)&&s.white]}>{String(pick(x,["type_name","service_name","name","service_code"],"خدمة"))}</Text></Pressable>)}</View><Text style={s.label}>الفرع</Text><View style={s.chips}>{[["ADMINISTRATION","الإدارة"],["NAQIL","النقيل"]].map(([v,l])=><Pressable key={v} onPress={()=>setModuleType(v)} style={[s.chip,(moduleType||"ADMINISTRATION")===v&&s.chipActive]}><Text style={[s.chipText,(moduleType||"ADMINISTRATION")===v&&s.white]}>{l}</Text></Pressable>)}</View></>}
           <Field label="العنوان" value={moduleTitle} onChangeText={setModuleTitle} placeholder="أدخل عنوان السجل"/>
           <Field label="التفاصيل" value={moduleDescription} onChangeText={setModuleDescription} placeholder="اكتب التفاصيل" multiline/>
           {(activeModule==="grievances"||activeModule==="suggestions")&&<Field label={activeModule==="grievances"?"الإجراء المطلوب":"الفائدة المتوقعة"} value={moduleExtra} onChangeText={setModuleExtra} placeholder="تفاصيل إضافية"/>}
@@ -877,7 +887,19 @@ export default function App() {
       <Btn title="العودة إلى خدمات النظام" secondary onPress={()=>{setScreen("dashboard");setModuleSelected(null);}}/>
     </ScrollView>}
 
-    {screen==="workflow" && systemAdmin && <ScrollView contentContainerStyle={s.container}>
+    {screen==="notifications" && <ScrollView contentContainerStyle={[s.container,{paddingBottom:105}]}>
+      <View style={s.hero}><Text style={s.heroTitle}>الإشعارات</Text><Text style={s.heroSub}>التنبيهات الخاصة بطلباتك ومتابعة الإجراءات.</Text></View>
+      <View style={s.card}><View style={s.noticeRow}><View style={s.noticeIcon}><Ionicons name="notifications-outline" size={24} color={C.primary}/></View><View style={{flex:1}}><Text style={s.title}>الإشعارات</Text><Text style={s.sub}>سيتم عرض التنبيهات المرتبطة بحسابك هنا.</Text></View></View><Text style={s.empty}>لا توجد إشعارات غير مقروءة حالياً.</Text></View>
+    </ScrollView>}
+
+    {screen==="settings" && <ScrollView contentContainerStyle={[s.container,{paddingBottom:105}]}>
+      <View style={s.hero}><Text style={s.heroTitle}>الإعدادات</Text><Text style={s.heroSub}>إدارة حسابك وإعدادات التطبيق.</Text></View>
+      <View style={s.card}><View style={s.profileHead}><View style={s.profileIcon}><Ionicons name="person-outline" size={30} color={C.primary}/></View><View style={{flex:1}}><Text style={s.title}>{employee?.employee_name||"المستخدم"}</Text><Text style={s.sub}>الرقم الوظيفي: {employee?.employee_number||"—"}</Text></View></View>
+        <Btn title="تسجيل الخروج" secondary onPress={logout}/>
+      </View>
+    </ScrollView>}
+
+    {screen==="workflow" && systemAdmin && <ScrollView contentContainerStyle={[s.container,{paddingBottom:105}]}>
       <View style={s.hero}><Text style={s.heroTitle}>مسارات الموافقات</Text><Text style={s.heroSub}>إعداد المدير المباشر ومسؤولي الخدمات والمراجعة حسب الفرع</Text></View>
       <View style={s.card}><Text style={s.title}>1. تعيين المدير المباشر لموظف واحد</Text><Text style={s.sub}>ابحث بالاسم أو الرقم الوظيفي، ثم اختر الموظف من القائمة المنسدلة. البحث يشمل جميع الموظفين النشطين المحملين من قاعدة البيانات.</Text>
         <Pressable style={s.dropdownButton} onPress={()=>setWorkflowEmployeePickerOpen(v=>!v)}><Text style={s.dropdownButtonText}>{workflowSelectedEmployee?`${employeeNameOf(workflowSelectedEmployee)} — ${employeeNoOf(workflowSelectedEmployee)}`:"اضغط لاختيار الموظف"}</Text><Text style={s.dropdownArrow}>{workflowEmployeePickerOpen?"▲":"▼"}</Text></Pressable>
@@ -920,8 +942,17 @@ export default function App() {
       <Btn title="تحديث البيانات" secondary disabled={busy} onPress={async()=>{setBusy(true);try{await loadWorkflowManagementData();}catch(e:any){Alert.alert("تعذر التحديث",errText(e));}finally{setBusy(false);}}}/>
       <Btn title="العودة إلى خدمات النظام" secondary onPress={()=>setScreen("dashboard")}/>
     </ScrollView>}
+    {screen!=="login" && screen!=="survey" && screen!=="result" && <BottomNav current={screen} onHome={()=>setScreen("dashboard")} onNotifications={()=>setScreen("notifications")} onSettings={()=>setScreen("settings")}/>}
     {busy && <View pointerEvents="none" style={s.loading}><ActivityIndicator color={C.primary}/></View>}
   </SafeAreaView>;
+}
+
+function BottomNav({current,onHome,onNotifications,onSettings}:{current:string;onHome:()=>void;onNotifications:()=>void;onSettings:()=>void}){
+  const item=(name:any,label:string,active:boolean,onPress:()=>void)=><Pressable onPress={onPress} style={s.navItem}>
+    <View style={[s.navIcon,active&&s.navIconActive]}><Ionicons name={name} size={23} color={active?"#fff":C.muted}/></View>
+    <Text style={[s.navLabel,active&&s.navLabelActive]}>{label}</Text>
+  </Pressable>;
+  return <View style={s.bottomNav}>{item("notifications-outline","الإشعارات",current==="notifications",onNotifications)}{item("home-outline","الرئيسية",current==="dashboard",onHome)}{item("settings-outline","الإعدادات",current==="settings",onSettings)}</View>;
 }
 
 function html(v:any){return String(v??"").replace(/[&<>\"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c] as string));}
@@ -934,5 +965,5 @@ function AverageBar({title,value}:{title:string;value:number}){const v=Math.max(
 
 const s=StyleSheet.create({
  safe:{flex:1,backgroundColor:C.bg},container:{padding:16,paddingBottom:40},hero:{backgroundColor:C.primary,borderRadius:18,padding:22,marginBottom:16},heroTitle:{color:"#fff",fontSize:24,fontWeight:"800",textAlign:"right"},heroSub:{color:"#fff",fontSize:13,textAlign:"right",marginTop:8,lineHeight:21},
- card:{backgroundColor:"#fff",borderRadius:16,padding:17,marginBottom:15,borderWidth:1,borderColor:"#E7EAF0"},title:{fontSize:21,fontWeight:"800",color:C.text,textAlign:"right"},sub:{fontSize:12,color:C.muted,textAlign:"right",marginTop:5,marginBottom:12,lineHeight:20},body:{fontSize:15,color:C.text,textAlign:"right",lineHeight:25,marginVertical:12},field:{marginBottom:14},label:{fontSize:13,fontWeight:"700",color:C.text,textAlign:"right",marginBottom:7},input:{borderWidth:1,borderColor:C.border,borderRadius:10,backgroundColor:"#fff",padding:11,fontSize:14,color:C.text,minHeight:44},readonly:{marginBottom:13,alignItems:"flex-end"},readonlyText:{fontSize:15,color:C.dark,fontWeight:"700"},chips:{flexDirection:"row",flexWrap:"wrap",justifyContent:"flex-end",gap:7},chip:{borderWidth:1,borderColor:C.border,borderRadius:9,padding:9,backgroundColor:"#fff"},chipActive:{backgroundColor:C.primary,borderColor:C.primary},chipText:{fontSize:12,color:C.text},white:{color:"#fff"},btn:{backgroundColor:C.primary,borderRadius:10,paddingVertical:13,alignItems:"center",marginTop:8},btnText:{color:"#fff",fontWeight:"800",fontSize:14},btn2:{backgroundColor:"#fff",borderWidth:1,borderColor:C.border},btnText2:{color:C.dark},surveyCard:{borderWidth:1,borderColor:C.border,borderRadius:12,padding:13,marginTop:12},surveyTitle:{fontSize:16,fontWeight:"800",color:C.dark,textAlign:"right"},status:{fontSize:12,color:C.muted,textAlign:"right"},progress:{height:8,backgroundColor:"#E4E8ED",borderRadius:8,overflow:"hidden",marginTop:8},fill:{height:"100%",backgroundColor:C.primary},domain:{fontSize:17,fontWeight:"800",color:C.dark,textAlign:"right",marginVertical:10},qcard:{backgroundColor:"#fff",borderRadius:13,padding:14,marginBottom:11,borderWidth:1,borderColor:"#E7EAF0"},qno:{fontSize:12,fontWeight:"800",color:C.primary,textAlign:"right",marginBottom:6},question:{fontSize:14,fontWeight:"700",color:C.text,textAlign:"right",lineHeight:23,marginBottom:11},scale:{flexDirection:"row",flexWrap:"wrap",justifyContent:"flex-end",gap:6},scaleItem:{width:57,minHeight:60,borderWidth:1,borderColor:C.border,borderRadius:8,padding:5,alignItems:"center",justifyContent:"center"},active:{backgroundColor:C.primary,borderColor:C.primary},val:{fontSize:16,fontWeight:"800",color:C.dark},lbl:{fontSize:9,color:C.muted,textAlign:"center",marginTop:3},done:{alignSelf:"center",width:62,height:62,borderRadius:31,backgroundColor:"#E8F6EE",color:C.success,fontSize:42,fontWeight:"800",textAlign:"center",lineHeight:60,marginBottom:12},score:{flexDirection:"row-reverse",justifyContent:"space-between",padding:12,borderBottomWidth:1,borderBottomColor:"#EDF0F3"},scoreTitle:{color:C.text,fontSize:13},scoreVal:{fontWeight:"800",color:C.dark},total:{backgroundColor:C.pale,borderBottomWidth:0,marginTop:5,borderRadius:8},sectionTitle:{fontSize:16,fontWeight:"800",color:C.dark,textAlign:"right",marginTop:20,marginBottom:10},barWrap:{marginBottom:12},barHead:{flexDirection:"row-reverse",justifyContent:"space-between",marginBottom:5},barTitle:{fontSize:12,color:C.text,fontWeight:"700"},barValue:{fontSize:12,color:C.dark,fontWeight:"800"},barTrack:{height:10,backgroundColor:"#E8EBEF",borderRadius:8,overflow:"hidden"},barFill:{height:"100%",backgroundColor:C.primary,borderRadius:8},metrics:{flexDirection:"row",gap:10},metric:{flex:1,backgroundColor:C.pale,padding:13,borderRadius:10,alignItems:"center",marginBottom:10},metricValue:{fontSize:21,fontWeight:"800",color:C.dark},metricTitle:{fontSize:11,color:C.muted,marginTop:5},toggle:{flexDirection:"row-reverse",justifyContent:"space-between",alignItems:"center",padding:12,backgroundColor:C.bg,borderRadius:9},toggleValue:{fontWeight:"800",color:C.dark},exportRow:{flexDirection:"row-reverse",gap:8,marginBottom:12},exportBtn:{flex:1,padding:12,backgroundColor:C.pale,borderRadius:9,alignItems:"center"},exportText:{fontSize:12,fontWeight:"800",color:C.dark},responseCard:{borderWidth:1,borderColor:C.border,borderRadius:10,padding:12,marginTop:9},responseTitle:{fontWeight:"800",color:C.dark,textAlign:"right"},smallMuted:{fontSize:10,color:C.muted,textAlign:"right"},answerList:{borderTopWidth:1,borderTopColor:C.border,marginTop:10,paddingTop:7},answerLine:{paddingVertical:7,borderBottomWidth:1,borderBottomColor:"#F0F1F3"},answerText:{fontSize:12,color:C.text,textAlign:"right",lineHeight:19},answerValue:{fontSize:12,color:C.dark,fontWeight:"800",textAlign:"left",marginTop:3},empty:{textAlign:"center",color:C.muted,padding:15},selectedPanel:{marginTop:14,padding:12,borderRadius:10,backgroundColor:C.bg},dropdownButton:{minHeight:48,borderWidth:1,borderColor:C.border,borderRadius:10,backgroundColor:"#fff",padding:12,flexDirection:"row-reverse",alignItems:"center",justifyContent:"space-between",marginBottom:8},dropdownButtonText:{fontSize:13,color:C.text,textAlign:"right",flex:1},dropdownArrow:{color:C.dark,fontWeight:"800",marginLeft:8},dropdownPanel:{borderWidth:1,borderColor:C.border,borderRadius:10,padding:9,backgroundColor:"#FAFBFC",marginBottom:10},dropdownList:{maxHeight:230,marginTop:6},dropdownOption:{paddingVertical:11,paddingHorizontal:8,borderBottomWidth:1,borderBottomColor:"#E9EDF1"},dropdownOptionActive:{backgroundColor:C.pale},dropdownOptionText:{fontSize:13,color:C.text,textAlign:"right"},bulkActions:{marginTop:12,marginBottom:8},bulkActionButtons:{flexDirection:"row-reverse",flexWrap:"wrap",gap:7,marginTop:8},smallAction:{borderWidth:1,borderColor:C.border,borderRadius:8,paddingVertical:7,paddingHorizontal:9,backgroundColor:"#fff"},smallActionText:{fontSize:11,color:C.dark,fontWeight:"700"},bulkEmployeeList:{maxHeight:300,borderWidth:1,borderColor:C.border,borderRadius:10,paddingHorizontal:8,marginTop:5},bulkEmployeeRow:{flexDirection:"row-reverse",alignItems:"center",gap:10,paddingVertical:10,borderBottomWidth:1,borderBottomColor:"#EDF0F3"},checkboxBox:{width:23,height:23,borderRadius:5,borderWidth:1,borderColor:C.border,alignItems:"center",justifyContent:"center",backgroundColor:"#fff"},checkboxBoxActive:{backgroundColor:C.primary,borderColor:C.primary},checkboxMark:{color:"#fff",fontWeight:"900"},loading:{position:"absolute",top:8,right:8,backgroundColor:"#fff",padding:7,borderRadius:20}
+ card:{backgroundColor:"#fff",borderRadius:16,padding:17,marginBottom:15,borderWidth:1,borderColor:"#E7EAF0"},title:{fontSize:21,fontWeight:"800",color:C.text,textAlign:"right"},sub:{fontSize:12,color:C.muted,textAlign:"right",marginTop:5,marginBottom:12,lineHeight:20},body:{fontSize:15,color:C.text,textAlign:"right",lineHeight:25,marginVertical:12},field:{marginBottom:14},label:{fontSize:13,fontWeight:"700",color:C.text,textAlign:"right",marginBottom:7},input:{borderWidth:1,borderColor:C.border,borderRadius:10,backgroundColor:"#fff",padding:11,fontSize:14,color:C.text,minHeight:44},readonly:{marginBottom:13,alignItems:"flex-end"},readonlyText:{fontSize:15,color:C.dark,fontWeight:"700"},chips:{flexDirection:"row",flexWrap:"wrap",justifyContent:"flex-end",gap:7},chip:{borderWidth:1,borderColor:C.border,borderRadius:9,padding:9,backgroundColor:"#fff"},chipActive:{backgroundColor:C.primary,borderColor:C.primary},chipText:{fontSize:12,color:C.text},white:{color:"#fff"},btn:{backgroundColor:C.primary,borderRadius:10,paddingVertical:13,alignItems:"center",marginTop:8},btnText:{color:"#fff",fontWeight:"800",fontSize:14},btn2:{backgroundColor:"#fff",borderWidth:1,borderColor:C.border},btnText2:{color:C.dark},surveyCard:{borderWidth:1,borderColor:C.border,borderRadius:12,padding:13,marginTop:12},surveyTitle:{fontSize:16,fontWeight:"800",color:C.dark,textAlign:"right"},status:{fontSize:12,color:C.muted,textAlign:"right"},progress:{height:8,backgroundColor:"#E4E8ED",borderRadius:8,overflow:"hidden",marginTop:8},fill:{height:"100%",backgroundColor:C.primary},domain:{fontSize:17,fontWeight:"800",color:C.dark,textAlign:"right",marginVertical:10},qcard:{backgroundColor:"#fff",borderRadius:13,padding:14,marginBottom:11,borderWidth:1,borderColor:"#E7EAF0"},qno:{fontSize:12,fontWeight:"800",color:C.primary,textAlign:"right",marginBottom:6},question:{fontSize:14,fontWeight:"700",color:C.text,textAlign:"right",lineHeight:23,marginBottom:11},scale:{flexDirection:"row",flexWrap:"wrap",justifyContent:"flex-end",gap:6},scaleItem:{width:57,minHeight:60,borderWidth:1,borderColor:C.border,borderRadius:8,padding:5,alignItems:"center",justifyContent:"center"},active:{backgroundColor:C.primary,borderColor:C.primary},val:{fontSize:16,fontWeight:"800",color:C.dark},lbl:{fontSize:9,color:C.muted,textAlign:"center",marginTop:3},done:{alignSelf:"center",width:62,height:62,borderRadius:31,backgroundColor:"#E8F6EE",color:C.success,fontSize:42,fontWeight:"800",textAlign:"center",lineHeight:60,marginBottom:12},score:{flexDirection:"row-reverse",justifyContent:"space-between",padding:12,borderBottomWidth:1,borderBottomColor:"#EDF0F3"},scoreTitle:{color:C.text,fontSize:13},scoreVal:{fontWeight:"800",color:C.dark},total:{backgroundColor:C.pale,borderBottomWidth:0,marginTop:5,borderRadius:8},sectionTitle:{fontSize:16,fontWeight:"800",color:C.dark,textAlign:"right",marginTop:20,marginBottom:10},barWrap:{marginBottom:12},barHead:{flexDirection:"row-reverse",justifyContent:"space-between",marginBottom:5},barTitle:{fontSize:12,color:C.text,fontWeight:"700"},barValue:{fontSize:12,color:C.dark,fontWeight:"800"},barTrack:{height:10,backgroundColor:"#E8EBEF",borderRadius:8,overflow:"hidden"},barFill:{height:"100%",backgroundColor:C.primary,borderRadius:8},metrics:{flexDirection:"row",gap:10},metric:{flex:1,backgroundColor:C.pale,padding:13,borderRadius:10,alignItems:"center",marginBottom:10},metricValue:{fontSize:21,fontWeight:"800",color:C.dark},metricTitle:{fontSize:11,color:C.muted,marginTop:5},toggle:{flexDirection:"row-reverse",justifyContent:"space-between",alignItems:"center",padding:12,backgroundColor:C.bg,borderRadius:9},toggleValue:{fontWeight:"800",color:C.dark},exportRow:{flexDirection:"row-reverse",gap:8,marginBottom:12},exportBtn:{flex:1,padding:12,backgroundColor:C.pale,borderRadius:9,alignItems:"center"},exportText:{fontSize:12,fontWeight:"800",color:C.dark},responseCard:{borderWidth:1,borderColor:C.border,borderRadius:10,padding:12,marginTop:9},responseTitle:{fontWeight:"800",color:C.dark,textAlign:"right"},smallMuted:{fontSize:10,color:C.muted,textAlign:"right"},answerList:{borderTopWidth:1,borderTopColor:C.border,marginTop:10,paddingTop:7},answerLine:{paddingVertical:7,borderBottomWidth:1,borderBottomColor:"#F0F1F3"},answerText:{fontSize:12,color:C.text,textAlign:"right",lineHeight:19},answerValue:{fontSize:12,color:C.dark,fontWeight:"800",textAlign:"left",marginTop:3},empty:{textAlign:"center",color:C.muted,padding:15},selectedPanel:{marginTop:14,padding:12,borderRadius:10,backgroundColor:C.bg},dropdownButton:{minHeight:48,borderWidth:1,borderColor:C.border,borderRadius:10,backgroundColor:"#fff",padding:12,flexDirection:"row-reverse",alignItems:"center",justifyContent:"space-between",marginBottom:8},dropdownButtonText:{fontSize:13,color:C.text,textAlign:"right",flex:1},dropdownArrow:{color:C.dark,fontWeight:"800",marginLeft:8},dropdownPanel:{borderWidth:1,borderColor:C.border,borderRadius:10,padding:9,backgroundColor:"#FAFBFC",marginBottom:10},dropdownList:{maxHeight:230,marginTop:6},dropdownOption:{paddingVertical:11,paddingHorizontal:8,borderBottomWidth:1,borderBottomColor:"#E9EDF1"},dropdownOptionActive:{backgroundColor:C.pale},dropdownOptionText:{fontSize:13,color:C.text,textAlign:"right"},bulkActions:{marginTop:12,marginBottom:8},bulkActionButtons:{flexDirection:"row-reverse",flexWrap:"wrap",gap:7,marginTop:8},smallAction:{borderWidth:1,borderColor:C.border,borderRadius:8,paddingVertical:7,paddingHorizontal:9,backgroundColor:"#fff"},smallActionText:{fontSize:11,color:C.dark,fontWeight:"700"},bulkEmployeeList:{maxHeight:300,borderWidth:1,borderColor:C.border,borderRadius:10,paddingHorizontal:8,marginTop:5},bulkEmployeeRow:{flexDirection:"row-reverse",alignItems:"center",gap:10,paddingVertical:10,borderBottomWidth:1,borderBottomColor:"#EDF0F3"},checkboxBox:{width:23,height:23,borderRadius:5,borderWidth:1,borderColor:C.border,alignItems:"center",justifyContent:"center",backgroundColor:"#fff"},checkboxBoxActive:{backgroundColor:C.primary,borderColor:C.primary},checkboxMark:{color:"#fff",fontWeight:"900"},loading:{position:"absolute",top:8,right:8,backgroundColor:"#fff",padding:7,borderRadius:20},bottomNav:{position:"absolute",left:0,right:0,bottom:0,height:76,backgroundColor:"#fff",borderTopWidth:1,borderTopColor:C.border,flexDirection:"row-reverse",justifyContent:"space-around",alignItems:"center",paddingBottom:8,shadowOpacity:.08,shadowRadius:8,elevation:10},navItem:{flex:1,alignItems:"center",justifyContent:"center"},navIcon:{width:42,height:42,borderRadius:21,alignItems:"center",justifyContent:"center",backgroundColor:"#EEF1F4"},navIconActive:{backgroundColor:C.primary},navLabel:{fontSize:10,color:C.muted,fontWeight:"700",marginTop:3},navLabelActive:{color:C.primary,fontWeight:"800"},noticeRow:{flexDirection:"row-reverse",alignItems:"center",gap:12},noticeIcon:{width:50,height:50,borderRadius:25,backgroundColor:"#F1F3F5",alignItems:"center",justifyContent:"center"},profileHead:{flexDirection:"row-reverse",alignItems:"center",gap:12,marginBottom:10},profileIcon:{width:58,height:58,borderRadius:29,backgroundColor:"#F1F3F5",alignItems:"center",justifyContent:"center"}
 });

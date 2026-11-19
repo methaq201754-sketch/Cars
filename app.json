@@ -5,7 +5,7 @@
     "version": "2.1.12",
     "orientation": "portrait",
     "userInterfaceStyle": "light",
-    "icon": "./assets/icon.png",
+    "icon": "./icon.png",
     "splash": {
       "resizeMode": "contain",
       "backgroundColor": "#C0272D"
@@ -15,7 +15,7 @@
       "versionCode": 13,
       "minSdkVersion": 28,
       "adaptiveIcon": {
-        "foregroundImage": "./assets/icon.png",
+        "foregroundImage": "./icon.png",
         "backgroundColor": "#FFFFFF"
       }
     }

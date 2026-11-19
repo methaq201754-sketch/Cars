@@ -1,18 +1,23 @@
 {
   "expo": {
-    "name": "نظام الموارد البشرية",
-    "slug": "company-hr-system",
-    "version": "2.1.11",
+    "name": "الخدمات الإدارية",
+    "slug": "administrative-services",
+    "version": "2.1.12",
     "orientation": "portrait",
     "userInterfaceStyle": "light",
+    "icon": "./assets/icon.png",
     "splash": {
       "resizeMode": "contain",
       "backgroundColor": "#C0272D"
     },
     "android": {
       "package": "com.company.employee.survey",
-      "versionCode": 12,
-      "minSdkVersion": 27
+      "versionCode": 13,
+      "minSdkVersion": 28,
+      "adaptiveIcon": {
+        "foregroundImage": "./assets/icon.png",
+        "backgroundColor": "#FFFFFF"
+      }
     }
   }
 }

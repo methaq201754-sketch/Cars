@@ -24,6 +24,7 @@ const GRADES = ["الأولى","الثانية","الثالثة","الرابعة
 const QUALIFICATIONS = ["تعليم أساسي","ثانوية عامة","دبلوم","جامعي"];
 const SCALE_1: [number,string][] = [[5,"راضي تماماً"],[4,"راضي"],[3,"محايد"],[2,"غير راضي"],[1,"غير راضي إطلاقاً"]];
 const SCALE_2: [number,string][] = [[5,"ممتاز"],[4,"جيد جداً"],[3,"جيد"],[2,"مقبول"],[1,"ضعيف"]];
+const SCALE_LOYALTY: [number,string][] = [[5,"أوافق بشدة"],[4,"أوافق"],[3,"محايد"],[2,"لا أوافق"],[1,"لا أوافق بشدة"]];
 
 type Question = { question_no:number; domain_no:number; domain_name:string; question_text:string; is_morale_question?:boolean };
 type Period = { survey_id:number; start_at:string|null; end_at:string|null; is_enabled:boolean };
@@ -370,6 +371,12 @@ export default function App() {
         }); data=r.data; error=r.error;
       } else if(selectedSurvey.id===2){
         const r=await supabase.rpc("submit_survey_2_response",{
+          p_employee_number:employee.employee_number,p_department:department,p_job_grade:grade,
+          p_service_years:Number(years),p_qualification:qualification,
+          p_answers:questions.map(q=>({question_no:q.question_no,answer_value:answers[q.question_no]}))
+        }); data=r.data; error=r.error;
+      } else if(selectedSurvey.id===3){
+        const r=await supabase.rpc("submit_survey_3_response",{
           p_employee_number:employee.employee_number,p_department:department,p_job_grade:grade,
           p_service_years:Number(years),p_qualification:qualification,
           p_answers:questions.map(q=>({question_no:q.question_no,answer_value:answers[q.question_no]}))
@@ -858,7 +865,7 @@ export default function App() {
           const group=questions.filter(q=>q.domain_no===d); const domainName=group[0]?.domain_name||`المجال ${d}`;
           return <View key={d}><Text style={s.domain}>{domainName}</Text>{group.map(q=><View key={q.question_no} style={s.qcard}>
             <Text style={s.qno}>السؤال {q.question_no}</Text><Text style={s.question}>{q.question_text}</Text>
-            <View style={s.scale}>{(selectedSurvey?.id===2?SCALE_2:SCALE_1).map(x=><Pressable key={x[0]} onPress={()=>setAnswers(a=>({...a,[q.question_no]:x[0]}))} style={[s.scaleItem,answers[q.question_no]===x[0]&&s.active]}><Text style={[s.val,answers[q.question_no]===x[0]&&s.white]}>{x[0]}</Text><Text style={[s.lbl,answers[q.question_no]===x[0]&&s.white]}>{x[1]}</Text></Pressable>)}</View>
+            <View style={s.scale}>{(selectedSurvey?.id===3?SCALE_LOYALTY:selectedSurvey?.id===2?SCALE_2:SCALE_1).map(x=><Pressable key={x[0]} onPress={()=>setAnswers(a=>({...a,[q.question_no]:x[0]}))} style={[s.scaleItem,answers[q.question_no]===x[0]&&s.active]}><Text style={[s.val,answers[q.question_no]===x[0]&&s.white]}>{x[0]}</Text><Text style={[s.lbl,answers[q.question_no]===x[0]&&s.white]}>{x[1]}</Text></Pressable>)}</View>
           </View>)}</View>;
         })}
         {selectedSurvey?.id===1 && <View style={s.qcard}><Text style={s.qno}>ملاحظة مفتوحة</Text><Text style={s.question}>الأسباب التي أثرت على معنوياتك.</Text><TextInput value={reason} onChangeText={setReason} multiline style={[s.input,{height:100,textAlignVertical:"top"}]} placeholder="اكتب الأسباب إن وجدت..."/></View>}
@@ -873,7 +880,7 @@ export default function App() {
       <View style={s.card}><Text style={s.title}>اختيار الاستبيان</Text><View style={s.chips}>{catalog.map(sv=><Pressable key={sv.id} onPress={()=>{setAdminSurveyId(sv.id);setPeriodStart(sv.period?.start_at||"");setPeriodEnd(sv.period?.end_at||"");setPeriodEnabled(!!sv.period?.is_enabled);loadAdmin(sv.id);}} style={[s.chip,adminSurveyId===sv.id&&s.chipActive]}><Text style={[s.chipText,adminSurveyId===sv.id&&s.white]}>{sv.survey_name}</Text></Pressable>)}</View>
         <Text style={s.sectionTitle}>مؤشرات المشاركة</Text><View style={s.metrics}><Metric title="عدد المشاركات" value={String(adminStats.count)}/><Metric title="المتوسط العام" value={`${adminStats.overall.toFixed(2)} / 5`}/></View>
         <Text style={s.sectionTitle}>الرسم البياني لمتوسطات المجالات</Text>
-        <AverageBar title="المجال الأول" value={adminStats.d1}/><AverageBar title="المجال الثاني" value={adminStats.d2}/><AverageBar title="المجال الثالث" value={adminStats.d3}/><AverageBar title="المتوسط العام" value={adminStats.overall}/>
+        {adminSurveyId===3 ? <><AverageBar title="الولاء الوظيفي" value={adminStats.d1}/><AverageBar title="المتوسط العام" value={adminStats.overall}/></> : <><AverageBar title="المجال الأول" value={adminStats.d1}/><AverageBar title="المجال الثاني" value={adminStats.d2}/><AverageBar title="المجال الثالث" value={adminStats.d3}/><AverageBar title="المتوسط العام" value={adminStats.overall}/></>}
         <Text style={s.sub}>قراءة المؤشر: 4.50–5 ممتاز، 3.50–أقل من 4.50 جيد جداً، 2.50–أقل من 3.50 جيد، 1.50–أقل من 2.50 مقبول، وأقل من 1.50 ضعيف.</Text>
         <Btn title={busy?"جاري التحديث...":"تحديث النتائج"} secondary disabled={busy} onPress={()=>loadAdmin(adminSurveyId)}/>
       </View>

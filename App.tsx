@@ -152,19 +152,20 @@ export default function App() {
       .select("user_id,employee_id,display_name,is_active")
       .eq("user_id",authUser.id)
       .maybeSingle();
-    if(profileError) throw profileError;
-    if(!profile || profile.is_active !== true)
-      throw new Error("لا يوجد ملف مستخدم فعال مرتبط بهذا الحساب. يرجى مراجعة مسؤول النظام.");
-
     // Extract the employee number from the login email: emp-<number>@hr.company.invalid
     const email = String(authUser.email || "").trim().toLowerCase();
     const emailMatch = email.match(/^emp-(.+)@hr\.company\.invalid$/);
     const loginEmployeeNumber = emailMatch?.[1]?.trim() || "";
 
+    // Some legacy/admin accounts (including 100766) may have a valid Auth user
+    // and employee record while their user_profiles row is missing or stale.
+    // Do not reject the login before trying the employee-number fallback.
+    if(profileError && !loginEmployeeNumber) throw profileError;
+
     let empRow:any = null;
 
     // First try the employee UUID linked to the user profile.
-    if(profile.employee_id){
+    if(profile?.employee_id){
       const {data,error} = await supabase
         .from("employees")
         .select("id,employee_number,employee_name,is_active,employment_status")
@@ -185,8 +186,20 @@ export default function App() {
       empRow = data;
     }
 
+    // Final fallback: locate the employee directly by the employee number.
+    if(!empRow && loginEmployeeNumber){
+      const {data,error} = await supabase
+        .from("employees")
+        .select("id,employee_number,employee_name,is_active,employment_status")
+        .eq("employee_number",loginEmployeeNumber)
+        .eq("is_active",true)
+        .maybeSingle();
+      if(error) throw error;
+      empRow = data;
+    }
+
     if(!empRow)
-      throw new Error("لم يتم العثور على سجل الموظف المرتبط بالحساب. تحقق من ربط employee_id أو تطابق الرقم الوظيفي في سجل الموظفين.");
+      throw new Error("لم يتم العثور على سجل الموظف المرتبط بالحساب. تحقق من وجود الرقم الوظيفي وتفعيل الموظف.");
 
     // Never allow an account to load a different employee's record.
     if(loginEmployeeNumber && String(empRow.employee_number) !== loginEmployeeNumber)
@@ -251,7 +264,7 @@ export default function App() {
 
     const emp:Employee={
       employee_number:empRow.employee_number,
-      employee_name:profile.display_name||empRow.employee_name,
+      employee_name:profile?.display_name||empRow.employee_name,
       is_survey_admin:surveyAdmin || permissionMap.SURVEYS_MANAGE===true || isSystemAdministrator
     };
     setEmployee(emp);

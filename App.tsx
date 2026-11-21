@@ -55,7 +55,7 @@ const branchCodeOf = (r:any) => String(pick(r,["branch_code","code"]));
 const branchNameOf = (r:any) => String(pick(r,["branch_name","name","branch"]));
 
 export default function App() {
-  const [screen,setScreen] = useState<"login"|"dashboard"|"home"|"employee"|"survey"|"result"|"admin"|"workflow"|"employees"|"module"|"settings"|"notifications">("login");
+  const [screen,setScreen] = useState<"login"|"dashboard"|"home"|"employee"|"survey"|"result"|"admin"|"workflow"|"employees"|"module"|"surveyHub"|"settings"|"notifications">("login");
   const [employeeNo,setEmployeeNo] = useState("");
   const [password,setPassword] = useState("");
   const [employee,setEmployee] = useState<Employee|null>(null);
@@ -97,6 +97,9 @@ export default function App() {
   const [editEmployeeJobTitle,setEditEmployeeJobTitle] = useState("");
   const [editEmployeeActive,setEditEmployeeActive] = useState(true);
   const [activeModule,setActiveModule] = useState<"assets"|"grievances"|"suggestions"|"services"|"reports">("assets");
+  const [moduleTab,setModuleTab] = useState<"mine"|"manage">("mine");
+  const [surveyTab,setSurveyTab] = useState<"mine"|"manage">("mine");
+  const [pendingCounts,setPendingCounts] = useState<Record<string,number>>({surveys:0,grievances:0,suggestions:0,services:0,assets:0});
   const [moduleRows,setModuleRows] = useState<any[]>([]);
   const [moduleLookups,setModuleLookups] = useState<any[]>([]);
   const [moduleSearch,setModuleSearch] = useState("");
@@ -115,6 +118,11 @@ export default function App() {
   const [moduleNotes,setModuleNotes] = useState("");
   const [moduleCost,setModuleCost] = useState("");
   const [moduleRelatedRows,setModuleRelatedRows] = useState<any[]>([]);
+  const [moduleConfidentiality,setModuleConfidentiality] = useState("normal");
+  const [moduleAnonymous,setModuleAnonymous] = useState(false);
+  const [moduleBranch,setModuleBranch] = useState("ADMINISTRATION");
+  const [moduleRequiredDate,setModuleRequiredDate] = useState("");
+  const [moduleActionRequested,setModuleActionRequested] = useState("");
   const [investigationFindings,setInvestigationFindings] = useState("");
   const [investigationRecommendations,setInvestigationRecommendations] = useState("");
   const [investigationConclusion,setInvestigationConclusion] = useState("");
@@ -550,136 +558,164 @@ export default function App() {
     finally{setBusy(false);}
   };
 
+  const moduleTabCanReview=(key:string)=>{if(systemAdmin)return true;if(key==="grievances")return !!(permissions.GRIEVANCES_MANAGE||permissions.GRIEVANCES_INVESTIGATE||permissions.GRIEVANCES_DECIDE);if(key==="suggestions")return !!(permissions.IDEAS_REVIEW||permissions.IDEAS_IMPLEMENT);if(key==="services")return !!permissions.SERVICES_MANAGE;if(key==="assets")return !!(permissions.ASSETS_UPDATE||permissions.ASSETS_ASSIGN||permissions.ASSETS_MAINTAIN||permissions.ASSETS_MOVE||permissions.ASSETS_DISPOSE);return false;};
+  const loadPendingCounts=async()=>{const next={surveys:0,grievances:0,suggestions:0,services:0,assets:0};try{if(systemAdmin||permissions.SURVEYS_MANAGE){const r=await supabase.from("survey_control").select("survey_id").eq("is_enabled",true);next.surveys=r.error?0:(r.data?.length||0);}if(systemAdmin||moduleTabCanReview("grievances")){const r=await supabase.from("grievances").select("id",{count:"exact",head:true}).in("status",["SUBMITTED","UNDER_REVIEW","INVESTIGATION"]);next.grievances=r.error?0:(r.count||0);}if(systemAdmin||moduleTabCanReview("suggestions")){const r=await supabase.from("suggestions").select("id",{count:"exact",head:true}).in("status",["SUBMITTED","UNDER_REVIEW","REFERRED","APPROVED","IN_PROGRESS"]);next.suggestions=r.error?0:(r.count||0);}if(systemAdmin||moduleTabCanReview("services")){const r=await supabase.rpc("get_admin_service_requests_for_user");const rows=Array.isArray(r.data)?r.data:[];next.services=r.error?0:rows.filter((x:any)=>["SUBMITTED","MANAGER_APPROVED","SERVICES_PENDING","REVIEW_PENDING","IN_PROGRESS"].includes(String(x.status||"").toUpperCase())).length;}}catch(_e){}setPendingCounts(next);};
+  useEffect(()=>{if(employee)loadPendingCounts();},[employee,systemAdmin,permissions]);
+
   const moduleConfig:any={
     assets:{title:"الأصول والعهد",table:"assets",lookup:"asset_categories",view:"ASSETS_VIEW",access:["ASSETS_VIEW","ASSETS_CREATE","ASSETS_UPDATE","ASSETS_ASSIGN","ASSETS_MAINTAIN","ASSETS_MOVE","ASSETS_DISPOSE"],create:"ASSETS_CREATE",label:"الأصل",name:"asset_name"},
     grievances:{title:"الشكاوى والتظلمات",table:"grievances",lookup:"grievance_categories",view:"GRIEVANCES_VIEW",access:["GRIEVANCES_VIEW","GRIEVANCES_CREATE","GRIEVANCES_MANAGE","GRIEVANCES_INVESTIGATE","GRIEVANCES_DECIDE"],create:"GRIEVANCES_CREATE",label:"الشكوى",name:"subject"},
     suggestions:{title:"المقترحات",table:"suggestions",lookup:"suggestion_categories",view:"IDEAS_VIEW",access:["IDEAS_VIEW","IDEAS_CREATE","IDEAS_REVIEW","IDEAS_IMPLEMENT"],create:"IDEAS_CREATE",label:"المقترح",name:"title"},
     services:{title:"الخدمات الإدارية",table:"admin_service_requests",lookup:"admin_service_types",view:"SERVICES_VIEW",access:["SERVICES_VIEW","SERVICES_CREATE","SERVICES_MANAGE"],create:"SERVICES_CREATE",label:"الطلب",name:"title"}
   };
+
+  const loadModuleData=async(key:"assets"|"grievances"|"suggestions"|"services")=>{
+    const cfg=moduleConfig[key];
+    let rows:any[]=[];
+    if(key==="assets"){
+      if(systemAdmin || permissions.ASSETS_VIEW){
+        const q=await supabase.from("assets").select("*").order("created_at",{ascending:false}).limit(250);
+        if(q.error) throw q.error; rows=q.data||[];
+      }
+      if(!systemAdmin && employee?.employee_number){
+        const ae=await supabase.from("asset_assignments").select("*").eq("assignment_status","active").eq("employee_id",(employee as any).id||"").order("assigned_at",{ascending:false});
+        if(!ae.error && ae.data?.length){
+          const ids=ae.data.map((x:any)=>x.asset_id).filter(Boolean);
+          if(ids.length){
+            const ar=await supabase.from("assets").select("*").in("id",ids);
+            if(!ar.error) rows=(ar.data||[]).map((a:any)=>({...a,_assignment:ae.data.find((x:any)=>String(x.asset_id)===String(a.id))}));
+          }
+        }
+      }
+    }else{
+      let q:any;
+      if(key==="services") q=await supabase.rpc("get_admin_service_requests_for_user");
+      else q=await supabase.from(cfg.table).select("*").order("created_at",{ascending:false}).limit(250);
+      if(q.error) throw q.error; rows=Array.isArray(q.data)?q.data:[];
+    }
+    const l=await supabase.from(cfg.lookup).select("*").limit(200);
+    if(l.error && l.error.code!=="42P01") throw l.error;
+    setModuleRows(rows);setModuleLookups(l.data||[]);
+  };
+
   const openModule=async(key:"assets"|"grievances"|"suggestions"|"services"|"reports")=>{
     const allowed=systemAdmin || (key==="reports"?permissions.REPORTS_VIEW:moduleConfig[key].access.some((code:string)=>permissions[code]));
     if(!allowed){Alert.alert("غير مصرح","لا تملك صلاحية فتح هذه الوحدة.");return;}
-    setActiveModule(key);setModuleSearch("");setModuleSelected(null);setModuleShowForm(false);setBusy(true);
+    setActiveModule(key);setModuleSearch("");setModuleSelected(null);setModuleShowForm(false);setModuleRelatedRows([]);setModuleTab("mine");setBusy(true);
     try{
       if(key==="reports"){
         const views=["v_hr_dashboard_summary","v_hr_pending_approval_dashboard","v_admin_service_kpi","v_suggestions_kpi","v_grievances_kpi","v_grievance_investigation_kpi","v_admin_service_status","v_suggestions_status","v_grievances_status"];
         const entries=await Promise.all(views.map(async v=>{const {data,error}=await supabase.from(v).select("*").limit(100);if(error) return [v,[]] as [string,any[]];return [v,data||[]] as [string,any[]];}));
         setReportRows(Object.fromEntries(entries));
-      }else{
-        const cfg=moduleConfig[key];
-        let mainData:any[]=[];
-        if(key==="services") {
-          // Do not query admin_service_requests directly: the current RLS policy
-          // on that table is recursive. The SECURITY DEFINER RPC reads the table
-          // without re-entering the recursive policy.
-          const main=await supabase.rpc("get_admin_service_requests_for_user");
-          if(main.error) throw main.error;
-          mainData=Array.isArray(main.data)?main.data:[];
-        } else {
-          const main=await supabase.from(cfg.table).select("*").order("created_at",{ascending:false}).limit(250);
-          if(main.error) throw main.error;
-          mainData=main.data||[];
-        }
-        const lookup=await supabase.from(cfg.lookup).select("*").limit(200);
-        if(lookup.error && lookup.error.code!=="42P01") throw lookup.error;
-        setModuleRows(mainData);setModuleLookups(lookup.data||[]);
-      }
-      setScreen("module");
+      }else await loadModuleData(key);
+      setScreen("module");await loadPendingCounts();
     }catch(e:any){Alert.alert("تعذر فتح الوحدة",errText(e));}
     finally{setBusy(false);}
   };
-  const resetModuleForm=()=>{setModuleTitle("");setModuleDescription("");setModuleType("");setModuleCategory("");setModulePriority("NORMAL");setModuleExtra("");setModuleSelected(null);setModuleShowForm(false);};
+
+  const resetModuleForm=()=>{
+    setModuleTitle("");setModuleDescription("");setModuleType("");setModuleCategory("");setModulePriority("NORMAL");setModuleExtra("");
+    setModuleConfidentiality("normal");setModuleAnonymous(false);setModuleBranch("ADMINISTRATION");setModuleRequiredDate("");setModuleActionRequested("");
+    setModuleSelected(null);setModuleShowForm(false);
+  };
+
+  const resolveServiceWorkflow=async()=>{
+    let branch=moduleBranch||"ADMINISTRATION", manager="", servicesApprover="", reviewApprover="";
+    try{
+      const ew=await supabase.from("employee_workflow_assignments").select("*").eq("employee_number",employee?.employee_number||"").maybeSingle();
+      if(!ew.error && ew.data){
+        branch=String(pick(ew.data,["branch_code","branch"],branch));
+        manager=String(pick(ew.data,["manager_employee_number","manager_number"],""));
+      }
+    }catch(_e){}
+    try{
+      const ba=await supabase.from("workflow_branch_approvers").select("*").eq("branch_code",branch).eq("is_active",true);
+      if(!ba.error){
+        for(const a of ba.data||[]){
+          const role=String(pick(a,["role_code","approver_role"],""));
+          const no=String(pick(a,["employee_number","approver_employee_number","user_employee_number"],""));
+          if(role==="SERVICES_ADMIN") servicesApprover=no;
+          if(role==="REQUEST_AUDITOR") reviewApprover=no;
+        }
+      }
+    }catch(_e){}
+    if(!servicesApprover || !reviewApprover){
+      const local=workflowData.branch_approvers||[];
+      for(const a of local){
+        if(String(pick(a,["branch_code"],""))!==branch) continue;
+        const role=String(pick(a,["role_code"],"")); const no=employeeNoOf(a);
+        if(role==="SERVICES_ADMIN") servicesApprover=no;
+        if(role==="REQUEST_AUDITOR") reviewApprover=no;
+      }
+    }
+    return {branch,manager,servicesApprover,reviewApprover};
+  };
+
   const saveModuleRecord=async()=>{
-    if(!moduleTitle.trim()){Alert.alert("بيانات ناقصة","أدخل عنوان السجل.");return;}
+    if(!moduleTitle.trim() && activeModule!=="assets"){Alert.alert("بيانات ناقصة","أدخل العنوان.");return;}
     const {data:{user}}=await supabase.auth.getUser();
-    if(!user) {Alert.alert("انتهت الجلسة","سجل الدخول مرة أخرى.");return;}
+    if(!user){Alert.alert("انتهت الجلسة","سجل الدخول مرة أخرى.");return;}
     setBusy(true);
     try{
-      let table="",payload:any={};
       if(activeModule==="assets"){
         if(!moduleCategory) throw new Error("اختر تصنيف الأصل.");
         if(!moduleExtra.trim()) throw new Error("أدخل رمز الأصل.");
-        const {data,error}=await supabase.rpc("create_asset",{p_asset_code:moduleExtra.trim(),p_asset_name:moduleTitle.trim(),p_category_id:moduleCategory,p_description:moduleDescription.trim()||null,p_condition_status:"good",p_notes:null});
-        if(error) throw error;
-        Alert.alert("تم الحفظ","تم تسجيل الأصل بنجاح.");resetModuleForm();
-        const {data:rows,error:loadError}=await supabase.from("assets").select("*").order("created_at",{ascending:false}).limit(250);
-        if(loadError) throw loadError;setModuleRows(rows||[]);return;
+        const r=await supabase.rpc("create_asset",{p_asset_code:moduleExtra.trim(),p_asset_name:moduleTitle.trim(),p_category_id:moduleCategory,p_asset_tag:null,p_description:moduleDescription.trim()||null,p_serial_number:null,p_manufacturer:null,p_model:null,p_purchase_date:null,p_purchase_cost:null,p_supplier_name:null,p_warranty_start_date:null,p_warranty_end_date:null,p_current_location_id:null,p_condition_status:"good",p_notes:null});
+        if(r.error) throw r.error;
+        Alert.alert("تم الحفظ","تم تسجيل الأصل بنجاح.");
       }else if(activeModule==="grievances"){
         if(!moduleCategory) throw new Error("اختر تصنيف الشكوى.");
-        const r=await supabase.rpc("create_grievance",{
-          p_category_id:moduleCategory,
-          p_grievance_type:moduleType||"GENERAL",
-          p_subject:moduleTitle.trim(),
-          p_description:moduleDescription.trim(),
-          p_requested_action:moduleExtra.trim()||null,
-          p_confidentiality_level:"normal",
-          p_is_anonymous:false,
-          p_priority:modulePriority
-        });
+        if(!moduleDescription.trim()) throw new Error("أدخل تفاصيل الشكوى.");
+        const r=await supabase.rpc("create_grievance",{p_category_id:moduleCategory,p_grievance_type:moduleType||"GENERAL",p_subject:moduleTitle.trim(),p_description:moduleDescription.trim(),p_requested_action:moduleExtra.trim()||null,p_confidentiality_level:moduleConfidentiality,p_is_anonymous:moduleAnonymous,p_priority:modulePriority});
         if(r.error) throw r.error;
-        Alert.alert("تم الحفظ","تم تقديم الشكوى بنجاح.");
-        resetModuleForm();
-        await refreshModule();
-        return;
+        Alert.alert("تم التقديم","تم تقديم الشكوى وحفظها في مسار المتابعة.");
       }else if(activeModule==="suggestions"){
         if(!moduleCategory) throw new Error("اختر تصنيف المقترح.");
-        const r=await supabase.rpc("create_suggestion",{
-          p_category_code:String(pick(moduleLookups.find((x:any)=>String(x.id)===String(moduleCategory)),["category_code"],moduleType||"GENERAL")),
-          p_title:moduleTitle.trim(),
-          p_description:moduleDescription.trim(),
-          p_expected_benefit:moduleExtra.trim()||null,
-          p_requested_action:null,
-          p_proposer_employee_id:employee?.id||null,
-          p_department_id:employee?.department_id||null,
-          p_priority:modulePriority
-        });
+        if(!moduleDescription.trim()) throw new Error("أدخل تفاصيل المقترح.");
+        const cat=moduleLookups.find((x:any)=>String(x.id)===String(moduleCategory));
+        const r=await supabase.rpc("create_suggestion",{p_category_code:String(pick(cat,["category_code"],moduleType||"GENERAL")),p_title:moduleTitle.trim(),p_description:moduleDescription.trim(),p_expected_benefit:moduleExtra.trim()||null,p_requested_action:moduleActionRequested||null,p_proposer_employee_id:(employee as any)?.id||null,p_department_id:(employee as any)?.department_id||null,p_priority:modulePriority});
         if(r.error) throw r.error;
-        Alert.alert("تم الحفظ","تم تقديم المقترح بنجاح.");
-        resetModuleForm();
-        await refreshModule();
-        return;
+        Alert.alert("تم التقديم","تم تقديم المقترح بنجاح.");
       }else if(activeModule==="services"){
         if(!moduleCategory) throw new Error("اختر نوع الخدمة.");
-        const serviceType=moduleLookups.find((x:any)=>String(x.id)===String(moduleCategory));
-        const serviceCode=String(pick(serviceType,["service_code"],"OTHER"));
-        const branch=String(moduleType||"ADMINISTRATION");
+        if(!moduleDescription.trim()) throw new Error("أدخل تفاصيل الطلب.");
+        const st=moduleLookups.find((x:any)=>String(x.id)===String(moduleCategory));
+        const wf=await resolveServiceWorkflow();
         const r=await supabase.rpc("create_admin_service_request",{
-          p_service_code:serviceCode,
-          p_title:moduleTitle.trim(),
-          p_description:moduleDescription.trim(),
-          p_requester_employee_number:String(employee?.employee_number||""),
-          p_branch_code:branch,
-          p_manager_employee_number:null,
-          p_services_approver_employee_number:null,
-          p_review_approver_employee_number:null,
-          p_priority:modulePriority,
-          p_required_date:moduleExtra.trim()||null
+          p_service_code:String(pick(st,["service_code"],"OTHER")),p_title:moduleTitle.trim(),p_description:moduleDescription.trim(),
+          p_requester_employee_number:String(employee?.employee_number||""),p_branch_code:wf.branch,p_manager_employee_number:wf.manager||null,
+          p_services_approver_employee_number:wf.servicesApprover||null,p_review_approver_employee_number:wf.reviewApprover||null,
+          p_priority:modulePriority,p_required_date:moduleRequiredDate.trim()||null
         });
         if(r.error) throw r.error;
-        Alert.alert("تم الحفظ","تم تقديم طلب الخدمة بنجاح.");
-        resetModuleForm();
-        await refreshModule();
-        return;
-      }else return;
-    }catch(e:any){Alert.alert("تعذر حفظ السجل",errText(e));}
+        Alert.alert("تم التقديم","تم تقديم طلب الخدمة وتحويله إلى مسار الموافقات.");
+      }
+      resetModuleForm();await loadModuleData(activeModule as any);
+    }catch(e:any){Alert.alert("تعذر حفظ الطلب",errText(e));}
     finally{setBusy(false);}
   };
+
   const runModuleAction=async(action:string)=>{
     if(!moduleSelected?.id){Alert.alert("حدد السجل","اختر سجلاً أولاً.");return;}
-    const {data:{user}}=await supabase.auth.getUser();if(!user) return;
+    const {data:{user}}=await supabase.auth.getUser();if(!user)return;
     setBusy(true);
     try{
       if(activeModule==="assets"){
         let error:any=null;
         if(action==="assign"){
-          if(!moduleEmployeeNo.trim()) throw new Error("أدخل الرقم الوظيفي للموظف المستلم.");
-          const emp=await supabase.from("employees").select("id").eq("employee_number",moduleEmployeeNo.trim()).eq("is_active",true).maybeSingle();
-          if(emp.error) throw emp.error;if(!emp.data) throw new Error("لم يتم العثور على موظف نشط بهذا الرقم.");
-          const r=await supabase.rpc("assign_asset",{p_asset_id:moduleSelected.id,p_employee_id:emp.data.id,p_expected_return_date:null,p_handover_document_id:null,p_notes:moduleNotes||null});error=r.error;
+          if(!moduleEmployeeNo.trim()) throw new Error("أدخل الرقم الوظيفي للمستلم.");
+          const empQ=await supabase.from("employees").select("id").eq("employee_number",moduleEmployeeNo.trim()).eq("is_active",true).maybeSingle();
+          if(empQ.error) throw empQ.error;if(!empQ.data) throw new Error("لم يتم العثور على موظف نشط بهذا الرقم.");
+          const r=await supabase.rpc("assign_asset",{p_asset_id:moduleSelected.id,p_employee_id:empQ.data.id,p_expected_return_date:null,p_handover_document_id:null,p_notes:moduleNotes||null});error=r.error;
         }else if(action==="return"){
           const a=await supabase.from("asset_assignments").select("id").eq("asset_id",moduleSelected.id).eq("assignment_status","active").order("assigned_at",{ascending:false}).limit(1).maybeSingle();
           if(a.error) throw a.error;if(!a.data) throw new Error("لا توجد عهدة نشطة لهذا الأصل.");
           const r=await supabase.rpc("return_asset",{p_assignment_id:a.data.id,p_condition_status:moduleCondition,p_missing_parts:null,p_damage_description:moduleNotes||null,p_notes:moduleNotes||null,p_document_id:null});error=r.error;
+        }else if(action==="move"){
+          if(!moduleEmployeeNo.trim()) throw new Error("أدخل الرقم الوظيفي للموظف الجديد.");
+          const empQ=await supabase.from("employees").select("id").eq("employee_number",moduleEmployeeNo.trim()).eq("is_active",true).maybeSingle();
+          if(empQ.error) throw empQ.error;if(!empQ.data) throw new Error("الموظف الجديد غير موجود.");
+          const r=await supabase.rpc("move_asset",{p_asset_id:moduleSelected.id,p_to_location_id:null,p_to_employee_id:empQ.data.id,p_reference_type:"APP",p_reference_id:null,p_movement_reason:moduleNotes||"نقل عهدة"});error=r.error;
         }else if(action==="maintenance"){
           const r=await supabase.rpc("record_asset_maintenance",{p_asset_id:moduleSelected.id,p_maintenance_type:"GENERAL",p_problem_description:moduleNotes||"صيانة دورية",p_work_description:null,p_service_provider:null,p_start_date:new Date().toISOString().slice(0,10),p_end_date:null,p_estimated_cost:moduleCost?Number(moduleCost):null,p_actual_cost:null,p_maintenance_status:"open",p_warranty_covered:false,p_notes:moduleNotes||null});error=r.error;
         }else if(action==="inspection"){
@@ -703,14 +739,39 @@ export default function App() {
         if(!allowed.includes(action)) throw new Error("حالة المقترح غير معتمدة.");
         const r=await supabase.from("suggestions").update({status:action,updated_by:user.id,updated_at:new Date().toISOString(),management_decision:moduleNotes||moduleSelected.management_decision||null,decision_date:["APPROVED","REJECTED","REFERRED"].includes(action)?new Date().toISOString():moduleSelected.decision_date}).eq("id",moduleSelected.id).select("id");
         if(r.error) throw r.error;if(!r.data?.length) throw new Error("لم يتم تحديث المقترح؛ تحقق من صلاحيات المراجعة.");
+      }else if(activeModule==="services"){
+        if(action==="approve"){
+          const r=await supabase.rpc("approve_admin_service_request",{p_request_id:moduleSelected.id});if(r.error) throw r.error;
+        }else if(action==="reject"){
+          const r=await supabase.rpc("reject_admin_service_request",{p_request_id:moduleSelected.id,p_reason:moduleNotes||"مرفوض"});if(r.error) throw r.error;
+        }else if(action==="return"){
+          const r=await supabase.rpc("return_admin_service_request",{p_request_id:moduleSelected.id,p_reason:moduleNotes||"إعادة للموظف"});if(r.error) throw r.error;
+        }else if(action==="start"){
+          const r=await supabase.rpc("start_admin_service_execution",{p_request_id:moduleSelected.id});if(r.error) throw r.error;
+        }else if(action==="complete"){
+          const r=await supabase.rpc("complete_admin_service_request",{p_request_id:moduleSelected.id,p_execution_notes:moduleNotes||null,p_final_result:moduleNotes||null});if(r.error) throw r.error;
+        }else if(action==="close"){
+          const r=await supabase.rpc("close_admin_service_request",{p_request_id:moduleSelected.id});if(r.error) throw r.error;
+        }
       }
-      Alert.alert("تم تنفيذ الإجراء","تم حفظ الإجراء بنجاح.");
-      await refreshModule();
+      Alert.alert("تم التنفيذ","تم حفظ الإجراء بنجاح.");
+      await loadModuleData(activeModule as any);
     }catch(e:any){Alert.alert("تعذر تنفيذ الإجراء",errText(e));}
     finally{setBusy(false);}
   };
-  const refreshModule=async()=>{await openModule(activeModule);};
+  const refreshModule=async()=>{if(activeModule==="reports"){await openModule("reports");}else{setBusy(true);try{await loadModuleData(activeModule as any);}catch(e:any){Alert.alert("تعذر التحديث",errText(e));}finally{setBusy(false);}}};
   const filteredModuleRows=moduleRows.filter((r:any)=>{const q=moduleSearch.trim().toLowerCase();return !q||JSON.stringify(r).toLowerCase().includes(q);});
+  const selectModuleRow=async(r:any)=>{
+    setModuleSelected(r);setModuleRelatedRows([]);
+    if(activeModule==="assets"){
+      const q=await supabase.from("asset_assignments").select("*").eq("asset_id",r.id).order("assigned_at",{ascending:false});
+      if(!q.error)setModuleRelatedRows(q.data||[]);
+    }
+    if(activeModule==="grievances"){
+      const q=await supabase.from("grievance_investigations").select("*").eq("grievance_id",r.id).order("created_at",{ascending:false});
+      if(!q.error)setModuleRelatedRows(q.data||[]);
+    }
+  };
 
   const filteredWorkflowEmployees=workflowData.employees.filter((r:any)=>{
     const q=workflowSearch.trim().toLowerCase();
@@ -726,7 +787,7 @@ export default function App() {
   });
   const managerNumbers=new Set(workflowData.managers.map((r:any)=>employeeNoOf(r)));
 
-  const reset = () => {setScreen("home");setSelectedSurvey(null);setAnswers({});setReason("");setResult(null);};
+  const reset = () => {setScreen("dashboard");setSelectedSurvey(null);setAnswers({});setReason("");setResult(null);};
   const logout = async () => {await supabase.auth.signOut();setEmployee(null);setEmployeeNo("");setPassword("");setCatalog([]);setSelectedSurvey(null);setAdminRows([]);setRoleCodes([]);setPermissions({});setSystemAdmin(false);setEmployeesRows([]);setSelectedEmployeeRecord(null);setScreen("login");};
 
   return <SafeAreaView style={s.safe}><StatusBar barStyle="dark-content"/>
@@ -740,24 +801,26 @@ export default function App() {
 
     {screen==="dashboard" && <ScrollView contentContainerStyle={[s.container,{paddingBottom:105}]}>
       <View style={s.hero}><Text style={s.heroTitle}>مرحباً {employee?.employee_name}</Text><Text style={s.heroSub}>الرقم الوظيفي: {employee?.employee_number}</Text></View>
-      <View style={s.card}><Text style={s.title}>خدمات النظام</Text><Text style={s.sub}>تظهر الوحدات وفق الصلاحيات الممنوحة لحسابك.</Text>
-        {(systemAdmin||permissions.EMPLOYEES_VIEW)&&<View style={s.surveyCard}><Text style={s.surveyTitle}>الموظفون</Text><Text style={s.sub}>عرض ملفات الموظفين والبحث فيها وتحديث القسم والمسمى الوظيفي وحالة التفعيل للمخولين.</Text><Btn title="الموظفون" onPress={openEmployeeManagement}/></View>}
-        {(systemAdmin||permissions.SURVEYS_VIEW||permissions.SURVEYS_MANAGE)&&<View style={s.surveyCard}><Text style={s.surveyTitle}>الاستبيانات</Text><Text style={s.sub}>استبيان رضا الموظفين وتقييم الخدمات، مع إدارة الفترات والنتائج للمخولين.</Text><Btn title="الاستبيانات" onPress={async()=>{setBusy(true);try{await loadCatalog();setScreen(employee?.is_survey_admin?"admin":"home");if(employee?.is_survey_admin) await loadAdmin(adminSurveyId,employee?.employee_number);}catch(e:any){Alert.alert("تعذر تحميل الاستبيانات",errText(e));}finally{setBusy(false);}}}/></View>}
-        {(systemAdmin||["ASSETS_VIEW","ASSETS_CREATE","ASSETS_UPDATE","ASSETS_ASSIGN","ASSETS_MAINTAIN","ASSETS_MOVE","ASSETS_DISPOSE"].some(k=>permissions[k]))&&<View style={s.surveyCard}><Text style={s.surveyTitle}>الأصول والعهد</Text><Text style={s.sub}>سجل الأصول، التصنيفات، الحالة، ومتابعة العهد.</Text><Btn title="الأصول والعهد" onPress={()=>openModule("assets")}/></View>}
-        {(systemAdmin||["GRIEVANCES_VIEW","GRIEVANCES_CREATE","GRIEVANCES_MANAGE","GRIEVANCES_INVESTIGATE","GRIEVANCES_DECIDE"].some(k=>permissions[k]))&&<View style={s.surveyCard}><Text style={s.surveyTitle}>الشكاوى والتظلمات</Text><Text style={s.sub}>تسجيل الشكاوى ومتابعة حالتها وبيانات التحقيق.</Text><Btn title="الشكاوى والتظلمات" onPress={()=>openModule("grievances")}/></View>}
-        {(systemAdmin||["IDEAS_VIEW","IDEAS_CREATE","IDEAS_REVIEW","IDEAS_IMPLEMENT"].some(k=>permissions[k]))&&<View style={s.surveyCard}><Text style={s.surveyTitle}>المقترحات</Text><Text style={s.sub}>تسجيل المقترحات ومتابعة التقييم والتنفيذ.</Text><Btn title="المقترحات" onPress={()=>openModule("suggestions")}/></View>}
-        {(systemAdmin||["SERVICES_VIEW","SERVICES_CREATE","SERVICES_MANAGE"].some(k=>permissions[k]))&&<View style={s.surveyCard}><Text style={s.surveyTitle}>الخدمات الإدارية</Text><Text style={s.sub}>تقديم طلبات الخدمات والتصاريح ومتابعة مراحلها.</Text><Btn title="الخدمات الإدارية" onPress={()=>openModule("services")}/></View>}
-        {(systemAdmin||permissions.REPORTS_VIEW)&&<View style={s.surveyCard}><Text style={s.surveyTitle}>التقارير</Text><Text style={s.sub}>مؤشرات الأداء والطلبات المعلقة وحالات الوحدات.</Text><Btn title="فتح التقارير" onPress={()=>openModule("reports")}/></View>}
-        {systemAdmin&&<View style={s.surveyCard}><Text style={s.surveyTitle}>مسارات الموافقات</Text><Text style={s.sub}>تعيين المدير المباشر لكل موظف، وإدارة المديرين، وتحديد مسؤولي الخدمات والمراجعة حسب الفرع.</Text><Btn title="فتح مسارات الموافقات" onPress={openWorkflowManagement}/></View>}
-        <Btn title="تسجيل الخروج" secondary onPress={logout}/>
+      <View style={s.card}><Text style={s.title}>خدمات النظام</Text><Text style={s.sub}>الأقسام الرئيسية — تظهر وظائف الإدارة والمراجعة وفق صلاحيات حسابك.</Text>
+        <View style={s.mainGrid}>
+          {(systemAdmin||permissions.SURVEYS_VIEW||permissions.SURVEYS_MANAGE)&&<MainSectionCard icon="clipboard-outline" title="الاستبيانات" badge={pendingCounts.surveys} text="المشاركة والاستبيانات والنتائج والتحليلات." onPress={async()=>{setBusy(true);try{await loadCatalog();setSurveyTab("mine");setScreen("surveyHub");if(employee?.is_survey_admin) await loadAdmin(adminSurveyId,employee?.employee_number);}catch(e:any){Alert.alert("تعذر تحميل الاستبيانات",errText(e));}finally{setBusy(false);}}}/>}
+          {(systemAdmin||["GRIEVANCES_VIEW","GRIEVANCES_CREATE","GRIEVANCES_MANAGE","GRIEVANCES_INVESTIGATE","GRIEVANCES_DECIDE"].some(k=>permissions[k]))&&<MainSectionCard icon="shield-checkmark-outline" title="الشكاوى والتظلمات" badge={pendingCounts.grievances} text="تقديم الشكاوى ومتابعة الفحص والقرارات." onPress={()=>openModule("grievances")}/>}
+          {(systemAdmin||["IDEAS_VIEW","IDEAS_CREATE","IDEAS_REVIEW","IDEAS_IMPLEMENT"].some(k=>permissions[k]))&&<MainSectionCard icon="bulb-outline" title="المقترحات" badge={pendingCounts.suggestions} text="إضافة الأفكار وتقييمها ومتابعة تنفيذها." onPress={()=>openModule("suggestions")}/>}
+          {(systemAdmin||["SERVICES_VIEW","SERVICES_CREATE","SERVICES_MANAGE"].some(k=>permissions[k]))&&<MainSectionCard icon="briefcase-outline" title="الخدمات الإدارية" badge={pendingCounts.services} text="طلبات الخدمات ومسار الاعتماد والتنفيذ." onPress={()=>openModule("services")}/>}
+          {(systemAdmin||["ASSETS_VIEW","ASSETS_CREATE","ASSETS_UPDATE","ASSETS_ASSIGN","ASSETS_MAINTAIN","ASSETS_MOVE","ASSETS_DISPOSE"].some(k=>permissions[k]))&&<MainSectionCard icon="cube-outline" title="العهد والأصول" badge={pendingCounts.assets} text="العهد المسجلة وتسليمها وإخلاؤها وصيانتها." onPress={()=>openModule("assets")}/>}
+        </View>
       </View>
+      {(systemAdmin||permissions.EMPLOYEES_VIEW||permissions.REPORTS_VIEW)&&<View style={s.card}><Text style={s.title}>أدوات الإدارة</Text><Text style={s.sub}>وظائف إدارية إضافية لا تظهر ضمن الأقسام الخمسة الرئيسية.</Text>{(systemAdmin||permissions.EMPLOYEES_VIEW)&&<Btn title="إدارة الموظفين" secondary onPress={openEmployeeManagement}/>} {(systemAdmin||permissions.REPORTS_VIEW)&&<Btn title="التقارير والمؤشرات" secondary onPress={()=>openModule("reports")}/>} {systemAdmin&&<Btn title="مسارات الموافقات" secondary onPress={openWorkflowManagement}/>}</View>}
+      <Btn title="تسجيل الخروج" secondary onPress={logout}/>
     </ScrollView>}
 
-    {screen==="home" && <ScrollView contentContainerStyle={[s.container,{paddingBottom:105}]}>
+    {screen==="surveyHub" && <ScrollView contentContainerStyle={[s.container,{paddingBottom:105}]}>
       <View style={s.hero}><Text style={s.heroTitle}>مرحباً {employee?.employee_name}</Text><Text style={s.heroSub}>الرقم الوظيفي: {employee?.employee_number}</Text></View>
-      <View style={s.card}><Text style={s.title}>الاستبيانات المتاحة</Text><Text style={s.sub}>اختر الاستبيان الذي ترغب في المشاركة فيه.</Text>
+      <View style={s.card}><Text style={s.title}>الاستبيانات</Text><Text style={s.sub}>واجهة الموظف والمراجع داخل نفس القسم.</Text><View style={s.roleTabs}><Pressable onPress={()=>setSurveyTab("mine")} style={[s.roleTab,surveyTab==="mine"&&s.roleTabActive]}><Text style={[s.roleTabText,surveyTab==="mine"&&s.roleTabTextActive]}>طلباتي / مشاركاتي</Text></Pressable>{(systemAdmin||employee?.is_survey_admin||permissions.SURVEYS_MANAGE)&&<Pressable onPress={()=>{setSurveyTab("manage");setScreen("admin");}} style={[s.roleTab,s.surveyTab==="manage"&&s.roleTabActive]}><Text style={[s.roleTabText,s.surveyTab==="manage"&&s.roleTabTextActive]}>إدارة ومراجعة</Text></Pressable>}</View>{surveyTab==="mine"&&<><Text style={s.sectionTitle}>الاستبيانات النشطة</Text>
         {catalog.filter(x=>x.is_active).map(sv=><View key={sv.id} style={s.surveyCard}><Text style={s.surveyTitle}>{sv.survey_name}</Text><Text style={s.sub}>{sv.description||`${sv.questions?.length||0} سؤالاً`}</Text><Text style={s.status}>{dateOpen(sv.period)?"مفتوح للمشاركة":"مغلق حالياً"}</Text><Btn title="فتح الاستبيان" secondary={!dateOpen(sv.period)} onPress={()=>chooseSurvey(sv)}/></View>)}
-        <Btn title="العودة إلى خدمات النظام" secondary onPress={()=>setScreen("dashboard")}/>
+        </>}
+        {surveyTab==="manage"&&<View style={s.managerHint}><Text style={s.title}>إدارة ومراجعة الاستبيانات</Text><Text style={s.sub}>أنشئ الفترات، راجع المشاركات، واعرض المؤشرات والتصدير.</Text><Btn title="فتح لوحة الإدارة" onPress={()=>{setScreen("admin");loadAdmin(adminSurveyId,employee?.employee_number);}}/></View>}
+        <Btn title="العودة إلى الرئيسية" secondary onPress={()=>setScreen("dashboard")}/>
         <Btn title="تسجيل الخروج" secondary onPress={logout}/>
       </View>
     </ScrollView>}
@@ -771,7 +834,7 @@ export default function App() {
         <Field label="سنوات الخدمة" value={years} onChangeText={setYears} keyboardType="numeric" placeholder="من 1 إلى 30"/>
         <Choices label="المؤهل" values={QUALIFICATIONS} value={qualification} onChange={setQualification}/>
         <Btn title={busy?"جاري التحقق...":"متابعة إلى الأسئلة"} disabled={busy} onPress={startSurvey}/>
-        <Btn title="رجوع" secondary onPress={()=>setScreen("home")}/>
+        <Btn title="رجوع" secondary onPress={()=>setScreen("surveyHub")}/>
       </View>
     </ScrollView>}
 
@@ -855,41 +918,57 @@ export default function App() {
       <Btn title="العودة إلى خدمات النظام" secondary onPress={()=>setScreen("dashboard")}/>
     </ScrollView>}
 
-    {screen==="module" && <ScrollView contentContainerStyle={[s.container,{paddingBottom:105}]}>
-      <View style={s.hero}><Text style={s.heroTitle}>{activeModule==="reports"?"التقارير":moduleConfig[activeModule].title}</Text><Text style={s.heroSub}>عرض البيانات المسجلة وإضافة سجلات جديدة وفق صلاحيات حسابك</Text></View>
-      {activeModule==="reports" ? <>
-        {Object.entries(reportRows).map(([view,rows])=><View key={view} style={s.card}><Text style={s.title}>{({v_hr_dashboard_summary:"ملخص لوحة الموارد البشرية",v_hr_pending_approval_dashboard:"الموافقات المعلقة",v_admin_service_kpi:"مؤشرات الخدمات الإدارية",v_suggestions_kpi:"مؤشرات المقترحات",v_grievances_kpi:"مؤشرات الشكاوى",v_grievance_investigation_kpi:"مؤشرات التحقيقات",v_admin_service_status:"حالات طلبات الخدمات",v_suggestions_status:"حالات المقترحات",v_grievances_status:"حالات الشكاوى"} as any)[view]||view}</Text>{rows.length?rows.slice(0,30).map((r:any,i:number)=><View key={i} style={s.responseCard}><Text style={s.answerText}>{Object.entries(r).map(([k,v])=>`${k}: ${v??"—"}`).join(" | ")}</Text></View>):<Text style={s.empty}>لا توجد بيانات متاحة أو لا توجد صلاحية لقراءة هذا التقرير.</Text>}</View>)}
-      </> : <>
-        <View style={s.card}><Text style={s.title}>سجل الوحدة</Text><Field label="البحث" value={moduleSearch} onChangeText={setModuleSearch} placeholder="ابحث في السجلات"/><Text style={s.smallMuted}>السجلات المحملة: {filteredModuleRows.length}</Text>
-          {filteredModuleRows.map((r:any,i:number)=><Pressable key={String(r.id||i)} onPress={async()=>{setModuleSelected(r);setModuleRelatedRows([]);if(activeModule==="grievances"){const q=await supabase.from("grievance_investigations").select("*").eq("grievance_id",r.id).order("created_at",{ascending:false});if(!q.error)setModuleRelatedRows(q.data||[]);}}} style={[s.responseCard,moduleSelected?.id===r.id&&{borderColor:C.primary,backgroundColor:C.pale}]}><Text style={s.responseTitle}>{String(pick(r,[moduleConfig[activeModule].name,"request_number","grievance_number","suggestion_number","asset_code","id"],"سجل"))}</Text><Text style={s.smallMuted}>{String(pick(r,["status","asset_status","condition_status","priority"],"—"))} | {String(pick(r,["created_at","submission_date"],""))}</Text><Text style={s.answerText}>{String(pick(r,["description","subject","title"],""))}</Text></Pressable>)}
-          {!filteredModuleRows.length&&<Text style={s.empty}>لا توجد سجلات مطابقة.</Text>}
-          <Btn title="تحديث السجلات" secondary disabled={busy} onPress={refreshModule}/>
-          {(systemAdmin||permissions[moduleConfig[activeModule].create])&&<Btn title={`إضافة ${moduleConfig[activeModule].label} جديد`} onPress={()=>{resetModuleForm();setModuleShowForm(true);}}/>}
-        </View>
-        {moduleShowForm&&<View style={s.card}><Text style={s.title}>تسجيل {moduleConfig[activeModule].label} جديد</Text>
-          {activeModule==="assets"&&<><Field label="رمز الأصل" value={moduleExtra} onChangeText={setModuleExtra} placeholder="مثال: AST-0001"/><Text style={s.label}>تصنيف الأصل</Text><View style={s.chips}>{moduleLookups.map((x:any)=><Pressable key={String(x.id)} onPress={()=>setModuleCategory(String(x.id))} style={[s.chip,moduleCategory===String(x.id)&&s.chipActive]}><Text style={[s.chipText,moduleCategory===String(x.id)&&s.white]}>{String(pick(x,["category_name","name","category_code"],"تصنيف"))}</Text></Pressable>)}</View></>}
-          {(activeModule==="grievances"||activeModule==="suggestions")&&<><Field label="النوع" value={moduleType} onChangeText={setModuleType} placeholder="GENERAL"/><Text style={s.label}>التصنيف</Text><View style={s.chips}>{moduleLookups.map((x:any)=><Pressable key={String(x.id)} onPress={()=>setModuleCategory(String(x.id))} style={[s.chip,moduleCategory===String(x.id)&&s.chipActive]}><Text style={[s.chipText,moduleCategory===String(x.id)&&s.white]}>{String(pick(x,["category_name","name","category_code"],"تصنيف"))}</Text></Pressable>)}</View></>}
-          {activeModule==="services"&&<><Text style={s.label}>نوع الخدمة / التصريح</Text><View style={s.chips}>{moduleLookups.map((x:any)=><Pressable key={String(x.id)} onPress={()=>setModuleCategory(String(x.id))} style={[s.chip,moduleCategory===String(x.id)&&s.chipActive]}><Text style={[s.chipText,moduleCategory===String(x.id)&&s.white]}>{String(pick(x,["type_name","service_name","name","service_code"],"خدمة"))}</Text></Pressable>)}</View><Text style={s.label}>الفرع</Text><View style={s.chips}>{[["ADMINISTRATION","الإدارة"],["NAQIL","النقيل"]].map(([v,l])=><Pressable key={v} onPress={()=>setModuleType(v)} style={[s.chip,(moduleType||"ADMINISTRATION")===v&&s.chipActive]}><Text style={[s.chipText,(moduleType||"ADMINISTRATION")===v&&s.white]}>{l}</Text></Pressable>)}</View></>}
-          <Field label="العنوان" value={moduleTitle} onChangeText={setModuleTitle} placeholder="أدخل عنوان السجل"/>
-          <Field label="التفاصيل" value={moduleDescription} onChangeText={setModuleDescription} placeholder="اكتب التفاصيل" multiline/>
-          {(activeModule==="grievances"||activeModule==="suggestions")&&<Field label={activeModule==="grievances"?"الإجراء المطلوب":"الفائدة المتوقعة"} value={moduleExtra} onChangeText={setModuleExtra} placeholder="تفاصيل إضافية"/>}
-          {activeModule==="services"&&<Field label="تاريخ الاحتياج (اختياري)" value={moduleExtra} onChangeText={setModuleExtra} placeholder="YYYY-MM-DD"/>}
-          {activeModule!=="assets"&&<><Text style={s.label}>الأولوية</Text><View style={s.chips}>{[["LOW","منخفضة"],["NORMAL","عادية"],["HIGH","عالية"],["URGENT","عاجلة"]].map(([v,l])=><Pressable key={v} onPress={()=>setModulePriority(v)} style={[s.chip,modulePriority===v&&s.chipActive]}><Text style={[s.chipText,modulePriority===v&&s.white]}>{l}</Text></Pressable>)}</View></>}
-          <Btn title="حفظ السجل" disabled={busy} onPress={saveModuleRecord}/><Btn title="إلغاء" secondary onPress={resetModuleForm}/>
-        </View>}
-        {moduleSelected&&<View style={s.card}><Text style={s.title}>تفاصيل السجل المحدد</Text>{Object.entries(moduleSelected).map(([k,v])=><View key={k} style={s.answerLine}><Text style={s.answerText}>{k}: {String(v??"—")}</Text></View>)}
-          {activeModule==="assets"&&<><Text style={s.sectionTitle}>إجراءات الأصل</Text><Field label="رقم الموظف للعهدة" value={moduleEmployeeNo} onChangeText={setModuleEmployeeNo} keyboardType="numeric" placeholder="رقم الموظف"/><Field label="التكلفة (اختياري)" value={moduleCost} onChangeText={setModuleCost} keyboardType="numeric" placeholder="0"/><Field label="ملاحظات / سبب الإجراء" value={moduleNotes} onChangeText={setModuleNotes} placeholder="التفاصيل"/><Text style={s.label}>حالة الأصل</Text><View style={s.chips}>{[["new","جديد"],["excellent","ممتاز"],["good","جيد"],["fair","مقبول"],["poor","ضعيف"],["damaged","تالف"]].map(([v,l])=><Pressable key={v} onPress={()=>setModuleCondition(v)} style={[s.chip,moduleCondition===v&&s.chipActive]}><Text style={[s.chipText,moduleCondition===v&&s.white]}>{l}</Text></Pressable>)}</View><View style={s.chips}><Btn title="تسليم عهدة" onPress={()=>runModuleAction("assign")}/><Btn title="استلام عهدة" secondary onPress={()=>runModuleAction("return")}/><Btn title="تسجيل صيانة" secondary onPress={()=>runModuleAction("maintenance")}/><Btn title="تسجيل فحص" secondary onPress={()=>runModuleAction("inspection")}/><Btn title="استبعاد الأصل" secondary onPress={()=>runModuleAction("dispose")}/></View></>}
-          {activeModule==="grievances"&&<><Text style={s.sectionTitle}>التحقيقات المرتبطة بالشكوى</Text><Field label="نطاق التحقيق / ملاحظات" value={moduleNotes} onChangeText={setModuleNotes} placeholder="تفاصيل نطاق التحقيق"/><Btn title="إنشاء تحقيق وإسناده إليّ" onPress={()=>runModuleAction("new_investigation")}/>{moduleRelatedRows.map((inv:any)=><View key={String(inv.id)} style={s.responseCard}><Text style={s.responseTitle}>{inv.investigation_number||"تحقيق"} — {inv.investigation_status}</Text><Text style={s.answerText}>{inv.investigation_title||""}</Text><Btn title="بدء التحقيق" secondary onPress={async()=>{setModuleSelected(inv);await runModuleAction("start_investigation");}}/><Btn title="تحديد التحقيق مكتملاً" secondary onPress={()=>{setModuleSelected(inv);setInvestigationFindings("");setInvestigationRecommendations("");setInvestigationConclusion("");Alert.alert("إكمال التحقيق","أدخل نتائج التحقيق والتوصيات والخلاصة من الحقول أدناه ثم اضغط حفظ الإكمال.");}}/></View>)}<Field label="نتائج التحقيق" value={investigationFindings} onChangeText={setInvestigationFindings} placeholder="النتائج" multiline/><Field label="التوصيات" value={investigationRecommendations} onChangeText={setInvestigationRecommendations} placeholder="التوصيات" multiline/><Field label="الخلاصة" value={investigationConclusion} onChangeText={setInvestigationConclusion} placeholder="الخلاصة" multiline/><Btn title="حفظ إكمال التحقيق المحدد" onPress={()=>runModuleAction("complete_investigation")}/></>}
-          {activeModule==="suggestions"&&<><Text style={s.sectionTitle}>إدارة حالة المقترح</Text><Field label="قرار / ملاحظات الإدارة" value={moduleNotes} onChangeText={setModuleNotes} placeholder="اكتب مبررات القرار"/><View style={s.chips}>{[["UNDER_REVIEW","قيد المراجعة"],["APPROVED","معتمد"],["REJECTED","مرفوض"],["REFERRED","محال"],["IN_PROGRESS","قيد التنفيذ"],["IMPLEMENTED","منفذ"],["CLOSED","مغلق"]].map(([v,l])=><Pressable key={v} onPress={()=>runModuleAction(v)} style={s.chip}><Text style={s.chipText}>{l}</Text></Pressable>)}</View></>}
+    {screen==="module" && <ScrollView contentContainerStyle={s.container}>
+      <View style={s.hero}><Text style={s.heroTitle}>{activeModule==="reports"?"التقارير ومؤشرات الأداء":moduleConfig[activeModule].title}</Text><Text style={s.heroSub}>{activeModule==="reports"?"":activeModule==="assets"?"العهد الحالية وتفاصيل الأصل والاستلام والإرجاع والنقل والصيانة والفحص.":activeModule==="grievances"?"تقديم الشكوى ومتابعة الحالة والسرية والتحقيقات.":activeModule==="suggestions"?"تقديم المقترح ومتابعة التقييم والقرار والتنفيذ.":"طلب التصاريح والخدمات ومتابعة رقم الطلب والمرحلة ومسار الموافقات."}</Text></View>
+      {activeModule!=="reports"&&<View style={s.card}><View style={s.roleTabs}><Pressable onPress={()=>setModuleTab("mine")} style={[s.roleTab,moduleTab==="mine"&&s.roleTabActive]}><Text style={[s.roleTabText,moduleTab==="mine"&&s.roleTabTextActive]}>طلباتي / مشاركاتي</Text></Pressable>{moduleTabCanReview(activeModule)&&<Pressable onPress={()=>setModuleTab("manage")} style={[s.roleTab,moduleTab==="manage"&&s.roleTabActive]}><Text style={[s.roleTabText,moduleTab==="manage"&&s.roleTabTextActive]}>إدارة ومراجعة</Text></Pressable>}</View></View>}
 
+      {activeModule==="reports" ? <>
+        {(Object.entries(reportRows) as [string,any[]][]).map(([view,rows])=><View key={view} style={s.card}><Text style={s.title}>{({v_hr_dashboard_summary:"ملخص لوحة الموارد البشرية",v_hr_pending_approval_dashboard:"الموافقات المعلقة",v_admin_service_kpi:"مؤشرات الخدمات الإدارية",v_suggestions_kpi:"مؤشرات المقترحات",v_grievances_kpi:"مؤشرات الشكاوى",v_grievance_investigation_kpi:"مؤشرات التحقيقات",v_admin_service_status:"حالات طلبات الخدمات",v_suggestions_status:"حالات المقترحات",v_grievances_status:"حالات الشكاوى"} as any)[view]||view}</Text>{rows.length?rows.slice(0,30).map((r:any,i:number)=><View key={i} style={s.responseCard}><Text style={s.answerText}>{Object.entries(r).map(([k,v])=>`${k}: ${v??"—"}`).join(" | ")}</Text></View>):<Text style={s.empty}>لا توجد بيانات متاحة.</Text>}</View>)}
+      </> : <>
+        <View style={s.card}><Text style={s.title}>{activeModule==="assets"?"العهد والأصول":activeModule==="grievances"?"الشكاوى والتظلمات":activeModule==="suggestions"?"المقترحات":"طلبات الخدمات والتصاريح"}</Text>
+          <Field label="البحث" value={moduleSearch} onChangeText={setModuleSearch} placeholder="الاسم أو الرقم أو الحالة"/><Text style={s.smallMuted}>السجلات: {filteredModuleRows.length}</Text>
+          {filteredModuleRows.filter((r:any)=>moduleTab==="manage" || String(pick(r,["requester_employee_number","employee_number","complainant_employee_number","requester_user_id","submitted_by","created_by"],""))===String(employee?.employee_number||(employee as any)?.user_id||"") || String(r.current_holder_employee_id||"")===String((employee as any)?.id||"")).map((r:any,i:number)=><Pressable key={String(r.id||i)} onPress={()=>selectModuleRow(r)} style={[s.responseCard,moduleSelected?.id===r.id&&{borderColor:C.primary,backgroundColor:C.pale}]}>
+            <Text style={s.responseTitle}>{String(pick(r,[activeModule==="assets"?"asset_name":activeModule==="grievances"?"subject":activeModule==="suggestions"?"title":"title","request_number","grievance_number","suggestion_number","asset_code","id"],"سجل"))}</Text>
+            <Text style={s.smallMuted}>{activeModule==="services"?`${String(pick(r,["request_number"],"بدون رقم"))} | ${String(pick(r,["status"],"—"))} | ${String(pick(r,["current_stage"],"—"))}`:`${String(pick(r,["status","asset_status","assignment_status","condition_status","priority"],"—"))} | ${String(pick(r,["created_at","submission_date","assigned_at"],""))}`}</Text>
+            <Text style={s.answerText}>{String(pick(r,["description","subject","title","notes"],""))}</Text>
+          </Pressable>)}
+          {!filteredModuleRows.length&&<Text style={s.empty}>{activeModule==="assets"&&!systemAdmin?"لا توجد عهد حالية مرتبطة بحسابك.":"لا توجد سجلات مطابقة."}</Text>}
+          <Btn title="تحديث السجلات" secondary disabled={busy} onPress={refreshModule}/>
+          {(systemAdmin||permissions[moduleConfig[activeModule].create])&&activeModule!=="assets"&&<Btn title={`تقديم ${moduleConfig[activeModule].label}`} onPress={()=>{resetModuleForm();setModuleShowForm(true);}}/>}
+          {(systemAdmin||permissions.ASSETS_ASSIGN)&&activeModule==="assets"&&<Btn title="تسجيل عهدة / تسليم أصل" onPress={()=>{resetModuleForm();setModuleShowForm(true);}}/>}
+        </View>
+
+        {moduleShowForm&&<View style={s.card}><Text style={s.title}>{activeModule==="assets"?"تسجيل عهدة / أصل":activeModule==="grievances"?"تقديم شكوى":activeModule==="suggestions"?"تقديم مقترح":"طلب تصريح / خدمة إدارية"}</Text>
+          {activeModule==="assets"&&<><Field label="رمز الأصل" value={moduleExtra} onChangeText={setModuleExtra} placeholder="مثال: AST-0001"/><Field label="اسم الأصل" value={moduleTitle} onChangeText={setModuleTitle} placeholder="اسم الأصل"/><Text style={s.label}>تصنيف الأصل</Text><View style={s.chips}>{moduleLookups.map((x:any)=><Pressable key={String(x.id)} onPress={()=>setModuleCategory(String(x.id))} style={[s.chip,moduleCategory===String(x.id)&&s.chipActive]}><Text style={[s.chipText,moduleCategory===String(x.id)&&s.white]}>{String(pick(x,["category_name","category_code"],"تصنيف"))}</Text></Pressable>)}</View><Field label="الرقم الوظيفي للعهدة" value={moduleEmployeeNo} onChangeText={setModuleEmployeeNo} keyboardType="numeric" placeholder="رقم الموظف المستلم"/><Field label="تفاصيل الأصل" value={moduleDescription} onChangeText={setModuleDescription} placeholder="الوصف" multiline/></>}
+          {activeModule==="grievances"&&<><Text style={s.label}>التصنيف</Text><View style={s.chips}>{moduleLookups.map((x:any)=><Pressable key={String(x.id)} onPress={()=>setModuleCategory(String(x.id))} style={[s.chip,moduleCategory===String(x.id)&&s.chipActive]}><Text style={[s.chipText,moduleCategory===String(x.id)&&s.white]}>{String(pick(x,["category_name","category_code"],"تصنيف"))}</Text></Pressable>)}</View><Field label="نوع الشكوى" value={moduleType} onChangeText={setModuleType} placeholder="GENERAL"/><Field label="العنوان" value={moduleTitle} onChangeText={setModuleTitle} placeholder="عنوان الشكوى"/><Field label="التفاصيل" value={moduleDescription} onChangeText={setModuleDescription} placeholder="تفاصيل الشكوى" multiline/><Text style={s.label}>الأولوية</Text><View style={s.chips}>{[["LOW","منخفضة"],["NORMAL","عادية"],["HIGH","عالية"],["URGENT","عاجلة"]].map(([v,l])=><Pressable key={v} onPress={()=>setModulePriority(v)} style={[s.chip,modulePriority===v&&s.chipActive]}><Text style={[s.chipText,modulePriority===v&&s.white]}>{l}</Text></Pressable>)}</View><Text style={s.label}>السرية</Text><View style={s.chips}>{[["normal","عادية"],["high","عالية"],["strict","مشددة"]].map(([v,l])=><Pressable key={v} onPress={()=>setModuleConfidentiality(v)} style={[s.chip,moduleConfidentiality===v&&s.chipActive]}><Text style={[s.chipText,moduleConfidentiality===v&&s.white]}>{l}</Text></Pressable>)}</View><Pressable onPress={()=>setModuleAnonymous(v=>!v)} style={s.toggle}><Text style={s.label}>الشكوى المجهولة</Text><Text style={[s.toggleValue,{color:moduleAnonymous?C.success:C.muted}]}>{moduleAnonymous?"مفعلة":"غير مفعلة"}</Text></Pressable><Field label="الإجراء المطلوب" value={moduleExtra} onChangeText={setModuleExtra} placeholder="ما الإجراء الذي تطلبه؟" multiline/></>}
+          {activeModule==="suggestions"&&<><Text style={s.label}>التصنيف</Text><View style={s.chips}>{moduleLookups.map((x:any)=><Pressable key={String(x.id)} onPress={()=>setModuleCategory(String(x.id))} style={[s.chip,moduleCategory===String(x.id)&&s.chipActive]}><Text style={[s.chipText,moduleCategory===String(x.id)&&s.white]}>{String(pick(x,["category_name","category_code"],"تصنيف"))}</Text></Pressable>)}</View><Field label="العنوان" value={moduleTitle} onChangeText={setModuleTitle} placeholder="عنوان المقترح"/><Field label="التفاصيل" value={moduleDescription} onChangeText={setModuleDescription} placeholder="تفاصيل المقترح" multiline/><Field label="الفائدة المتوقعة" value={moduleExtra} onChangeText={setModuleExtra} placeholder="ما الفائدة المتوقعة؟" multiline/><Field label="الإجراء المطلوب" value={moduleActionRequested} onChangeText={setModuleActionRequested} placeholder="الإجراء المقترح للتنفيذ" multiline/><Text style={s.label}>الأولوية</Text><View style={s.chips}>{[["LOW","منخفضة"],["NORMAL","عادية"],["HIGH","عالية"],["URGENT","عاجلة"]].map(([v,l])=><Pressable key={v} onPress={()=>setModulePriority(v)} style={[s.chip,modulePriority===v&&s.chipActive]}><Text style={[s.chipText,modulePriority===v&&s.white]}>{l}</Text></Pressable>)}</View></>}
+          {activeModule==="services"&&<><Text style={s.label}>نوع التصريح / الخدمة</Text><View style={s.chips}>{moduleLookups.map((x:any)=><Pressable key={String(x.id)} onPress={()=>setModuleCategory(String(x.id))} style={[s.chip,moduleCategory===String(x.id)&&s.chipActive]}><Text style={[s.chipText,moduleCategory===String(x.id)&&s.white]}>{String(pick(x,["service_name","service_code"],"خدمة"))}</Text></Pressable>)}</View><Field label="العنوان" value={moduleTitle} onChangeText={setModuleTitle} placeholder="عنوان الطلب"/><Field label="التفاصيل" value={moduleDescription} onChangeText={setModuleDescription} placeholder="تفاصيل الطلب" multiline/><Text style={s.label}>الفرع</Text><View style={s.chips}>{[["NAQIL","النقيل"],["ADMINISTRATION","الإدارة"]].map(([v,l])=><Pressable key={v} onPress={()=>setModuleBranch(v)} style={[s.chip,moduleBranch===v&&s.chipActive]}><Text style={[s.chipText,moduleBranch===v&&s.white]}>{l}</Text></Pressable>)}</View><Text style={s.label}>الأولوية</Text><View style={s.chips}>{[["LOW","منخفضة"],["NORMAL","عادية"],["HIGH","عالية"],["URGENT","عاجلة"]].map(([v,l])=><Pressable key={v} onPress={()=>setModulePriority(v)} style={[s.chip,modulePriority===v&&s.chipActive]}><Text style={[s.chipText,modulePriority===v&&s.white]}>{l}</Text></Pressable>)}</View><Field label="التاريخ المطلوب" value={moduleRequiredDate} onChangeText={setModuleRequiredDate} placeholder="YYYY-MM-DD"/></>}
+          <Btn title="إرسال الطلب" disabled={busy} onPress={saveModuleRecord}/><Btn title="إلغاء" secondary onPress={resetModuleForm}/>
+        </View>}
+
+        {moduleSelected&&<View style={s.card}><Text style={s.title}>تفاصيل السجل</Text>
+          {activeModule==="services"&&<><View style={s.metrics}><Metric title="رقم الطلب" value={String(pick(moduleSelected,["request_number"],"—"))}/><Metric title="الحالة" value={String(pick(moduleSelected,["status"],"—"))}/></View><View style={s.metrics}><Metric title="المرحلة" value={String(pick(moduleSelected,["current_stage"],"—"))}/><Metric title="المسؤول" value={String(pick(moduleSelected,["current_assignee","manager_employee_number","services_approver_employee_number"],"—"))}/></View><Text style={s.sectionTitle}>مسار الموافقات</Text><Text style={s.body}>المدير المباشر ← الخدمات الإدارية ← المراجعة</Text></>}
+          {activeModule!=="services"&&Object.entries(moduleSelected).map(([k,v])=><View key={k} style={s.answerLine}><Text style={s.answerText}>{k}: {String(v??"—")}</Text></View>)}
+          {activeModule==="assets"&&<><Text style={s.sectionTitle}>العهدة والإجراءات</Text>{moduleRelatedRows.map((a:any)=><View key={String(a.id)} style={s.responseCard}><Text style={s.responseTitle}>الموظف: {String(pick(a,["employee_id"],"—"))}</Text><Text style={s.smallMuted}>الحالة: {String(pick(a,["assignment_status"],"—"))} | الاستلام: {String(pick(a,["assigned_at"],"—"))}</Text><Text style={s.smallMuted}>الإرجاع: {String(pick(a,["returned_at"],"لم يرجع بعد"))}</Text></View>)}<Field label="رقم الموظف" value={moduleEmployeeNo} onChangeText={setModuleEmployeeNo} keyboardType="numeric" placeholder="رقم الموظف"/><Field label="ملاحظات / سبب الإجراء" value={moduleNotes} onChangeText={setModuleNotes} placeholder="التفاصيل"/><Text style={s.label}>حالة الأصل عند الإرجاع</Text><View style={s.chips}>{[["new","جديد"],["excellent","ممتاز"],["good","جيد"],["fair","مقبول"],["poor","ضعيف"],["damaged","تالف"]].map(([v,l])=><Pressable key={v} onPress={()=>setModuleCondition(v)} style={[s.chip,moduleCondition===v&&s.chipActive]}><Text style={[s.chipText,moduleCondition===v&&s.white]}>{l}</Text></Pressable>)}</View><View style={s.chips}><Btn title="استلام / تسليم" onPress={()=>runModuleAction("assign")}/><Btn title="إرجاع" secondary onPress={()=>runModuleAction("return")}/><Btn title="نقل" secondary onPress={()=>runModuleAction("move")}/><Btn title="صيانة" secondary onPress={()=>runModuleAction("maintenance")}/><Btn title="فحص" secondary onPress={()=>runModuleAction("inspection")}/></View></>}
+          {activeModule==="grievances"&&<><Text style={s.sectionTitle}>التحقيقات المرتبطة</Text><Field label="نطاق التحقيق / ملاحظات" value={moduleNotes} onChangeText={setModuleNotes} placeholder="تفاصيل نطاق التحقيق"/><Btn title="إنشاء تحقيق" onPress={()=>runModuleAction("new_investigation")}/>{moduleRelatedRows.map((inv:any)=><View key={String(inv.id)} style={s.responseCard}><Text style={s.responseTitle}>{inv.investigation_number||"تحقيق"} — {inv.investigation_status}</Text><Text style={s.answerText}>{inv.investigation_title||""}</Text></View>)}<Field label="نتائج التحقيق" value={investigationFindings} onChangeText={setInvestigationFindings} placeholder="النتائج" multiline/><Field label="التوصيات" value={investigationRecommendations} onChangeText={setInvestigationRecommendations} placeholder="التوصيات" multiline/><Field label="الخلاصة" value={investigationConclusion} onChangeText={setInvestigationConclusion} placeholder="الخلاصة" multiline/><Btn title="بدء التحقيق" secondary onPress={()=>runModuleAction("start_investigation")}/><Btn title="إكمال التحقيق" secondary onPress={()=>runModuleAction("complete_investigation")}/></>}
+          {activeModule==="suggestions"&&<><Text style={s.sectionTitle}>التقييم والقرار والتنفيذ</Text><Text style={s.body}>الحالة الحالية: {String(pick(moduleSelected,["status"],"—"))}</Text><Text style={s.body}>التقييم: {String(pick(moduleSelected,["evaluation","evaluation_score","evaluation_result"],"لم يتم التقييم بعد"))}</Text><Text style={s.body}>القرار: {String(pick(moduleSelected,["management_decision","decision"],"لم يصدر بعد"))}</Text><Text style={s.body}>التنفيذ: {String(pick(moduleSelected,["implementation_status","implementation_notes"],"غير محدد"))}</Text><Field label="قرار / ملاحظات" value={moduleNotes} onChangeText={setModuleNotes} placeholder="ملاحظات الإدارة"/><View style={s.chips}>{[["UNDER_REVIEW","قيد المراجعة"],["APPROVED","معتمد"],["REJECTED","مرفوض"],["REFERRED","محال"],["IN_PROGRESS","قيد التنفيذ"],["IMPLEMENTED","منفذ"],["CLOSED","مغلق"]].map(([v,l])=><Pressable key={v} onPress={()=>runModuleAction(v)} style={s.chip}><Text style={s.chipText}>{l}</Text></Pressable>)}</View></>}
+          {activeModule==="services"&&<><Text style={s.sectionTitle}>إجراءات الموافقة والتنفيذ</Text><Field label="ملاحظات الإجراء" value={moduleNotes} onChangeText={setModuleNotes} placeholder="ملاحظات" multiline/><View style={s.chips}><Btn title="اعتماد" onPress={()=>runModuleAction("approve")}/><Btn title="إرجاع" secondary onPress={()=>runModuleAction("return")}/><Btn title="رفض" secondary onPress={()=>runModuleAction("reject")}/><Btn title="بدء التنفيذ" secondary onPress={()=>runModuleAction("start")}/><Btn title="إكمال" secondary onPress={()=>runModuleAction("complete")}/><Btn title="إغلاق" secondary onPress={()=>runModuleAction("close")}/></View></>}
         </View>}
       </>}
       <Btn title="العودة إلى خدمات النظام" secondary onPress={()=>{setScreen("dashboard");setModuleSelected(null);}}/>
     </ScrollView>}
 
     {screen==="notifications" && <ScrollView contentContainerStyle={[s.container,{paddingBottom:105}]}>
-      <View style={s.hero}><Text style={s.heroTitle}>الإشعارات</Text><Text style={s.heroSub}>التنبيهات الخاصة بطلباتك ومتابعة الإجراءات.</Text></View>
-      <View style={s.card}><View style={s.noticeRow}><View style={s.noticeIcon}><Ionicons name="notifications-outline" size={24} color={C.primary}/></View><View style={{flex:1}}><Text style={s.title}>الإشعارات</Text><Text style={s.sub}>سيتم عرض التنبيهات المرتبطة بحسابك هنا.</Text></View></View><Text style={s.empty}>لا توجد إشعارات غير مقروءة حالياً.</Text></View>
+      <View style={s.hero}><Text style={s.heroTitle}>الإشعارات والإجراءات المعلقة</Text><Text style={s.heroSub}>متابعة الطلبات التي تحتاج إلى إجراء من حسابك.</Text></View>
+      <View style={s.card}>
+        <View style={s.noticeRow}><View style={s.noticeIcon}><Ionicons name="notifications-outline" size={24} color={C.primary}/></View><View style={{flex:1}}><Text style={s.title}>ملخص الإجراءات</Text><Text style={s.sub}>الشكاوى: {pendingCounts.grievances} | المقترحات: {pendingCounts.suggestions}</Text><Text style={s.sub}>الخدمات: {pendingCounts.services} | الاستبيانات: {pendingCounts.surveys}</Text></View></View>
+      </View>
+      {pendingCounts.grievances>0&&<View style={s.card}><Text style={s.title}>الشكاوى والتظلمات</Text><Text style={s.sub}>يوجد {pendingCounts.grievances} سجل يحتاج إلى متابعة.</Text><Btn title="فتح الشكاوى" secondary onPress={()=>openModule("grievances")}/></View>}
+      {pendingCounts.suggestions>0&&<View style={s.card}><Text style={s.title}>المقترحات</Text><Text style={s.sub}>يوجد {pendingCounts.suggestions} مقترحاً يحتاج إلى متابعة.</Text><Btn title="فتح المقترحات" secondary onPress={()=>openModule("suggestions")}/></View>}
+      {pendingCounts.services>0&&<View style={s.card}><Text style={s.title}>الخدمات الإدارية</Text><Text style={s.sub}>يوجد {pendingCounts.services} طلب خدمة يحتاج إلى متابعة.</Text><Btn title="فتح الخدمات" secondary onPress={()=>openModule("services")}/></View>}
+      {pendingCounts.surveys>0&&<View style={s.card}><Text style={s.title}>الاستبيانات</Text><Text style={s.sub}>توجد {pendingCounts.surveys} فترة/إجراء متاح للمراجعة.</Text><Btn title="فتح الاستبيانات" secondary onPress={async()=>{setBusy(true);try{await loadCatalog();setSurveyTab("manage");setScreen("surveyHub");}catch(e:any){Alert.alert("تعذر الفتح",errText(e));}finally{setBusy(false);}}}/></View>}
+      {!pendingCounts.grievances&&!pendingCounts.suggestions&&!pendingCounts.services&&!pendingCounts.surveys&&<View style={s.card}><Text style={s.empty}>لا توجد إجراءات معلقة حالياً.</Text></View>}
+      <Btn title="تحديث الإشعارات" secondary disabled={busy} onPress={loadPendingCounts}/>
     </ScrollView>}
 
     {screen==="settings" && <ScrollView contentContainerStyle={[s.container,{paddingBottom:105}]}>
@@ -947,6 +1026,10 @@ export default function App() {
   </SafeAreaView>;
 }
 
+function MainSectionCard({icon,title,badge,text,onPress}:{icon:any;title:string;badge?:number;text:string;onPress:()=>void}){return <Pressable onPress={onPress} style={s.mainSectionCard}><View style={s.mainSectionIcon}><Ionicons name={icon} size={28} color={C.primary}/>{Number(badge||0)>0&&<View style={s.badge}><Text style={s.badgeText}>{Number(badge)>99?"99+":String(badge)}</Text></View>}</View><View style={{flex:1}}><Text style={s.mainSectionTitle}>{title}</Text><Text style={s.mainSectionText}>{text}</Text></View><Ionicons name="chevron-back-outline" size={19} color={C.muted}/></Pressable>}
+
+function ModuleIcon({name}:{name:any}){return <View style={s.moduleIcon}><Ionicons name={name} size={25} color={C.primary}/></View>;}
+
 function BottomNav({current,onHome,onNotifications,onSettings}:{current:string;onHome:()=>void;onNotifications:()=>void;onSettings:()=>void}){
   const item=(name:any,label:string,active:boolean,onPress:()=>void)=><Pressable onPress={onPress} style={s.navItem}>
     <View style={[s.navIcon,active&&s.navIconActive]}><Ionicons name={name} size={23} color={active?"#fff":C.muted}/></View>
@@ -965,5 +1048,5 @@ function AverageBar({title,value}:{title:string;value:number}){const v=Math.max(
 
 const s=StyleSheet.create({
  safe:{flex:1,backgroundColor:C.bg},container:{padding:16,paddingBottom:40},hero:{backgroundColor:C.primary,borderRadius:18,padding:22,marginBottom:16},heroTitle:{color:"#fff",fontSize:24,fontWeight:"800",textAlign:"right"},heroSub:{color:"#fff",fontSize:13,textAlign:"right",marginTop:8,lineHeight:21},
- card:{backgroundColor:"#fff",borderRadius:16,padding:17,marginBottom:15,borderWidth:1,borderColor:"#E7EAF0"},title:{fontSize:21,fontWeight:"800",color:C.text,textAlign:"right"},sub:{fontSize:12,color:C.muted,textAlign:"right",marginTop:5,marginBottom:12,lineHeight:20},body:{fontSize:15,color:C.text,textAlign:"right",lineHeight:25,marginVertical:12},field:{marginBottom:14},label:{fontSize:13,fontWeight:"700",color:C.text,textAlign:"right",marginBottom:7},input:{borderWidth:1,borderColor:C.border,borderRadius:10,backgroundColor:"#fff",padding:11,fontSize:14,color:C.text,minHeight:44},readonly:{marginBottom:13,alignItems:"flex-end"},readonlyText:{fontSize:15,color:C.dark,fontWeight:"700"},chips:{flexDirection:"row",flexWrap:"wrap",justifyContent:"flex-end",gap:7},chip:{borderWidth:1,borderColor:C.border,borderRadius:9,padding:9,backgroundColor:"#fff"},chipActive:{backgroundColor:C.primary,borderColor:C.primary},chipText:{fontSize:12,color:C.text},white:{color:"#fff"},btn:{backgroundColor:C.primary,borderRadius:10,paddingVertical:13,alignItems:"center",marginTop:8},btnText:{color:"#fff",fontWeight:"800",fontSize:14},btn2:{backgroundColor:"#fff",borderWidth:1,borderColor:C.border},btnText2:{color:C.dark},surveyCard:{borderWidth:1,borderColor:C.border,borderRadius:12,padding:13,marginTop:12},surveyTitle:{fontSize:16,fontWeight:"800",color:C.dark,textAlign:"right"},status:{fontSize:12,color:C.muted,textAlign:"right"},progress:{height:8,backgroundColor:"#E4E8ED",borderRadius:8,overflow:"hidden",marginTop:8},fill:{height:"100%",backgroundColor:C.primary},domain:{fontSize:17,fontWeight:"800",color:C.dark,textAlign:"right",marginVertical:10},qcard:{backgroundColor:"#fff",borderRadius:13,padding:14,marginBottom:11,borderWidth:1,borderColor:"#E7EAF0"},qno:{fontSize:12,fontWeight:"800",color:C.primary,textAlign:"right",marginBottom:6},question:{fontSize:14,fontWeight:"700",color:C.text,textAlign:"right",lineHeight:23,marginBottom:11},scale:{flexDirection:"row",flexWrap:"wrap",justifyContent:"flex-end",gap:6},scaleItem:{width:57,minHeight:60,borderWidth:1,borderColor:C.border,borderRadius:8,padding:5,alignItems:"center",justifyContent:"center"},active:{backgroundColor:C.primary,borderColor:C.primary},val:{fontSize:16,fontWeight:"800",color:C.dark},lbl:{fontSize:9,color:C.muted,textAlign:"center",marginTop:3},done:{alignSelf:"center",width:62,height:62,borderRadius:31,backgroundColor:"#E8F6EE",color:C.success,fontSize:42,fontWeight:"800",textAlign:"center",lineHeight:60,marginBottom:12},score:{flexDirection:"row-reverse",justifyContent:"space-between",padding:12,borderBottomWidth:1,borderBottomColor:"#EDF0F3"},scoreTitle:{color:C.text,fontSize:13},scoreVal:{fontWeight:"800",color:C.dark},total:{backgroundColor:C.pale,borderBottomWidth:0,marginTop:5,borderRadius:8},sectionTitle:{fontSize:16,fontWeight:"800",color:C.dark,textAlign:"right",marginTop:20,marginBottom:10},barWrap:{marginBottom:12},barHead:{flexDirection:"row-reverse",justifyContent:"space-between",marginBottom:5},barTitle:{fontSize:12,color:C.text,fontWeight:"700"},barValue:{fontSize:12,color:C.dark,fontWeight:"800"},barTrack:{height:10,backgroundColor:"#E8EBEF",borderRadius:8,overflow:"hidden"},barFill:{height:"100%",backgroundColor:C.primary,borderRadius:8},metrics:{flexDirection:"row",gap:10},metric:{flex:1,backgroundColor:C.pale,padding:13,borderRadius:10,alignItems:"center",marginBottom:10},metricValue:{fontSize:21,fontWeight:"800",color:C.dark},metricTitle:{fontSize:11,color:C.muted,marginTop:5},toggle:{flexDirection:"row-reverse",justifyContent:"space-between",alignItems:"center",padding:12,backgroundColor:C.bg,borderRadius:9},toggleValue:{fontWeight:"800",color:C.dark},exportRow:{flexDirection:"row-reverse",gap:8,marginBottom:12},exportBtn:{flex:1,padding:12,backgroundColor:C.pale,borderRadius:9,alignItems:"center"},exportText:{fontSize:12,fontWeight:"800",color:C.dark},responseCard:{borderWidth:1,borderColor:C.border,borderRadius:10,padding:12,marginTop:9},responseTitle:{fontWeight:"800",color:C.dark,textAlign:"right"},smallMuted:{fontSize:10,color:C.muted,textAlign:"right"},answerList:{borderTopWidth:1,borderTopColor:C.border,marginTop:10,paddingTop:7},answerLine:{paddingVertical:7,borderBottomWidth:1,borderBottomColor:"#F0F1F3"},answerText:{fontSize:12,color:C.text,textAlign:"right",lineHeight:19},answerValue:{fontSize:12,color:C.dark,fontWeight:"800",textAlign:"left",marginTop:3},empty:{textAlign:"center",color:C.muted,padding:15},selectedPanel:{marginTop:14,padding:12,borderRadius:10,backgroundColor:C.bg},dropdownButton:{minHeight:48,borderWidth:1,borderColor:C.border,borderRadius:10,backgroundColor:"#fff",padding:12,flexDirection:"row-reverse",alignItems:"center",justifyContent:"space-between",marginBottom:8},dropdownButtonText:{fontSize:13,color:C.text,textAlign:"right",flex:1},dropdownArrow:{color:C.dark,fontWeight:"800",marginLeft:8},dropdownPanel:{borderWidth:1,borderColor:C.border,borderRadius:10,padding:9,backgroundColor:"#FAFBFC",marginBottom:10},dropdownList:{maxHeight:230,marginTop:6},dropdownOption:{paddingVertical:11,paddingHorizontal:8,borderBottomWidth:1,borderBottomColor:"#E9EDF1"},dropdownOptionActive:{backgroundColor:C.pale},dropdownOptionText:{fontSize:13,color:C.text,textAlign:"right"},bulkActions:{marginTop:12,marginBottom:8},bulkActionButtons:{flexDirection:"row-reverse",flexWrap:"wrap",gap:7,marginTop:8},smallAction:{borderWidth:1,borderColor:C.border,borderRadius:8,paddingVertical:7,paddingHorizontal:9,backgroundColor:"#fff"},smallActionText:{fontSize:11,color:C.dark,fontWeight:"700"},bulkEmployeeList:{maxHeight:300,borderWidth:1,borderColor:C.border,borderRadius:10,paddingHorizontal:8,marginTop:5},bulkEmployeeRow:{flexDirection:"row-reverse",alignItems:"center",gap:10,paddingVertical:10,borderBottomWidth:1,borderBottomColor:"#EDF0F3"},checkboxBox:{width:23,height:23,borderRadius:5,borderWidth:1,borderColor:C.border,alignItems:"center",justifyContent:"center",backgroundColor:"#fff"},checkboxBoxActive:{backgroundColor:C.primary,borderColor:C.primary},checkboxMark:{color:"#fff",fontWeight:"900"},loading:{position:"absolute",top:8,right:8,backgroundColor:"#fff",padding:7,borderRadius:20},bottomNav:{position:"absolute",left:0,right:0,bottom:0,height:76,backgroundColor:"#fff",borderTopWidth:1,borderTopColor:C.border,flexDirection:"row-reverse",justifyContent:"space-around",alignItems:"center",paddingBottom:8,shadowOpacity:.08,shadowRadius:8,elevation:10},navItem:{flex:1,alignItems:"center",justifyContent:"center"},navIcon:{width:42,height:42,borderRadius:21,alignItems:"center",justifyContent:"center",backgroundColor:"#EEF1F4"},navIconActive:{backgroundColor:C.primary},navLabel:{fontSize:10,color:C.muted,fontWeight:"700",marginTop:3},navLabelActive:{color:C.primary,fontWeight:"800"},noticeRow:{flexDirection:"row-reverse",alignItems:"center",gap:12},noticeIcon:{width:50,height:50,borderRadius:25,backgroundColor:"#F1F3F5",alignItems:"center",justifyContent:"center"},profileHead:{flexDirection:"row-reverse",alignItems:"center",gap:12,marginBottom:10},profileIcon:{width:58,height:58,borderRadius:29,backgroundColor:"#F1F3F5",alignItems:"center",justifyContent:"center"}
+ card:{backgroundColor:"#fff",borderRadius:16,padding:17,marginBottom:15,borderWidth:1,borderColor:"#E7EAF0"},mainGrid:{flexDirection:"row",flexWrap:"wrap",justifyContent:"space-between",marginTop:10},mainSectionCard:{width:"48.5%",minHeight:145,backgroundColor:"#fff",borderWidth:1,borderColor:C.border,borderRadius:16,padding:14,marginBottom:10},mainSectionIcon:{width:54,height:54,borderRadius:27,backgroundColor:C.pale,alignItems:"center",justifyContent:"center",marginBottom:10,alignSelf:"flex-end",position:"relative"},badge:{position:"absolute",top:-5,right:-5,minWidth:22,height:22,paddingHorizontal:5,borderRadius:11,backgroundColor:C.primary,alignItems:"center",justifyContent:"center",borderWidth:2,borderColor:"#fff"},badgeText:{color:"#fff",fontSize:10,fontWeight:"900"},mainSectionTitle:{fontSize:15,fontWeight:"900",color:C.dark,textAlign:"right"},mainSectionText:{fontSize:10,color:C.muted,textAlign:"right",lineHeight:17,marginTop:4},roleTabs:{flexDirection:"row-reverse",backgroundColor:C.bg,borderRadius:12,padding:4,marginBottom:12},roleTab:{flex:1,paddingVertical:10,borderRadius:9,alignItems:"center"},roleTabActive:{backgroundColor:"#fff",borderWidth:1,borderColor:C.border},roleTabText:{fontSize:12,color:C.muted,fontWeight:"700"},roleTabTextActive:{color:C.primary,fontWeight:"900"},managerHint:{backgroundColor:C.pale,borderRadius:12,padding:13,marginTop:10},title:{fontSize:21,fontWeight:"800",color:C.text,textAlign:"right"},sub:{fontSize:12,color:C.muted,textAlign:"right",marginTop:5,marginBottom:12,lineHeight:20},body:{fontSize:15,color:C.text,textAlign:"right",lineHeight:25,marginVertical:12},field:{marginBottom:14},label:{fontSize:13,fontWeight:"700",color:C.text,textAlign:"right",marginBottom:7},input:{borderWidth:1,borderColor:C.border,borderRadius:10,backgroundColor:"#fff",padding:11,fontSize:14,color:C.text,minHeight:44},readonly:{marginBottom:13,alignItems:"flex-end"},readonlyText:{fontSize:15,color:C.dark,fontWeight:"700"},chips:{flexDirection:"row",flexWrap:"wrap",justifyContent:"flex-end",gap:7},chip:{borderWidth:1,borderColor:C.border,borderRadius:9,padding:9,backgroundColor:"#fff"},chipActive:{backgroundColor:C.primary,borderColor:C.primary},chipText:{fontSize:12,color:C.text},white:{color:"#fff"},btn:{backgroundColor:C.primary,borderRadius:10,paddingVertical:13,alignItems:"center",marginTop:8},btnText:{color:"#fff",fontWeight:"800",fontSize:14},btn2:{backgroundColor:"#fff",borderWidth:1,borderColor:C.border},btnText2:{color:C.dark},moduleHead:{flexDirection:"row",alignItems:"center",gap:10,marginBottom:4},moduleIcon:{width:44,height:44,borderRadius:22,backgroundColor:"#F4F7FB",alignItems:"center",justifyContent:"center"},surveyCard:{borderWidth:1,borderColor:C.border,borderRadius:12,padding:13,marginTop:12},surveyTitle:{fontSize:16,fontWeight:"800",color:C.dark,textAlign:"right"},status:{fontSize:12,color:C.muted,textAlign:"right"},progress:{height:8,backgroundColor:"#E4E8ED",borderRadius:8,overflow:"hidden",marginTop:8},fill:{height:"100%",backgroundColor:C.primary},domain:{fontSize:17,fontWeight:"800",color:C.dark,textAlign:"right",marginVertical:10},qcard:{backgroundColor:"#fff",borderRadius:13,padding:14,marginBottom:11,borderWidth:1,borderColor:"#E7EAF0"},qno:{fontSize:12,fontWeight:"800",color:C.primary,textAlign:"right",marginBottom:6},question:{fontSize:14,fontWeight:"700",color:C.text,textAlign:"right",lineHeight:23,marginBottom:11},scale:{flexDirection:"row",flexWrap:"wrap",justifyContent:"flex-end",gap:6},scaleItem:{width:57,minHeight:60,borderWidth:1,borderColor:C.border,borderRadius:8,padding:5,alignItems:"center",justifyContent:"center"},active:{backgroundColor:C.primary,borderColor:C.primary},val:{fontSize:16,fontWeight:"800",color:C.dark},lbl:{fontSize:9,color:C.muted,textAlign:"center",marginTop:3},done:{alignSelf:"center",width:62,height:62,borderRadius:31,backgroundColor:"#E8F6EE",color:C.success,fontSize:42,fontWeight:"800",textAlign:"center",lineHeight:60,marginBottom:12},score:{flexDirection:"row-reverse",justifyContent:"space-between",padding:12,borderBottomWidth:1,borderBottomColor:"#EDF0F3"},scoreTitle:{color:C.text,fontSize:13},scoreVal:{fontWeight:"800",color:C.dark},total:{backgroundColor:C.pale,borderBottomWidth:0,marginTop:5,borderRadius:8},sectionTitle:{fontSize:16,fontWeight:"800",color:C.dark,textAlign:"right",marginTop:20,marginBottom:10},barWrap:{marginBottom:12},barHead:{flexDirection:"row-reverse",justifyContent:"space-between",marginBottom:5},barTitle:{fontSize:12,color:C.text,fontWeight:"700"},barValue:{fontSize:12,color:C.dark,fontWeight:"800"},barTrack:{height:10,backgroundColor:"#E8EBEF",borderRadius:8,overflow:"hidden"},barFill:{height:"100%",backgroundColor:C.primary,borderRadius:8},metrics:{flexDirection:"row",gap:10},metric:{flex:1,backgroundColor:C.pale,padding:13,borderRadius:10,alignItems:"center",marginBottom:10},metricValue:{fontSize:21,fontWeight:"800",color:C.dark},metricTitle:{fontSize:11,color:C.muted,marginTop:5},toggle:{flexDirection:"row-reverse",justifyContent:"space-between",alignItems:"center",padding:12,backgroundColor:C.bg,borderRadius:9},toggleValue:{fontWeight:"800",color:C.dark},exportRow:{flexDirection:"row-reverse",gap:8,marginBottom:12},exportBtn:{flex:1,padding:12,backgroundColor:C.pale,borderRadius:9,alignItems:"center"},exportText:{fontSize:12,fontWeight:"800",color:C.dark},responseCard:{borderWidth:1,borderColor:C.border,borderRadius:10,padding:12,marginTop:9},responseTitle:{fontWeight:"800",color:C.dark,textAlign:"right"},smallMuted:{fontSize:10,color:C.muted,textAlign:"right"},answerList:{borderTopWidth:1,borderTopColor:C.border,marginTop:10,paddingTop:7},answerLine:{paddingVertical:7,borderBottomWidth:1,borderBottomColor:"#F0F1F3"},answerText:{fontSize:12,color:C.text,textAlign:"right",lineHeight:19},answerValue:{fontSize:12,color:C.dark,fontWeight:"800",textAlign:"left",marginTop:3},empty:{textAlign:"center",color:C.muted,padding:15},selectedPanel:{marginTop:14,padding:12,borderRadius:10,backgroundColor:C.bg},dropdownButton:{minHeight:48,borderWidth:1,borderColor:C.border,borderRadius:10,backgroundColor:"#fff",padding:12,flexDirection:"row-reverse",alignItems:"center",justifyContent:"space-between",marginBottom:8},dropdownButtonText:{fontSize:13,color:C.text,textAlign:"right",flex:1},dropdownArrow:{color:C.dark,fontWeight:"800",marginLeft:8},dropdownPanel:{borderWidth:1,borderColor:C.border,borderRadius:10,padding:9,backgroundColor:"#FAFBFC",marginBottom:10},dropdownList:{maxHeight:230,marginTop:6},dropdownOption:{paddingVertical:11,paddingHorizontal:8,borderBottomWidth:1,borderBottomColor:"#E9EDF1"},dropdownOptionActive:{backgroundColor:C.pale},dropdownOptionText:{fontSize:13,color:C.text,textAlign:"right"},bulkActions:{marginTop:12,marginBottom:8},bulkActionButtons:{flexDirection:"row-reverse",flexWrap:"wrap",gap:7,marginTop:8},smallAction:{borderWidth:1,borderColor:C.border,borderRadius:8,paddingVertical:7,paddingHorizontal:9,backgroundColor:"#fff"},smallActionText:{fontSize:11,color:C.dark,fontWeight:"700"},bulkEmployeeList:{maxHeight:300,borderWidth:1,borderColor:C.border,borderRadius:10,paddingHorizontal:8,marginTop:5},bulkEmployeeRow:{flexDirection:"row-reverse",alignItems:"center",gap:10,paddingVertical:10,borderBottomWidth:1,borderBottomColor:"#EDF0F3"},checkboxBox:{width:23,height:23,borderRadius:5,borderWidth:1,borderColor:C.border,alignItems:"center",justifyContent:"center",backgroundColor:"#fff"},checkboxBoxActive:{backgroundColor:C.primary,borderColor:C.primary},checkboxMark:{color:"#fff",fontWeight:"900"},loading:{position:"absolute",top:8,right:8,backgroundColor:"#fff",padding:7,borderRadius:20},bottomNav:{position:"absolute",left:0,right:0,bottom:0,height:76,backgroundColor:"#fff",borderTopWidth:1,borderTopColor:C.border,flexDirection:"row-reverse",justifyContent:"space-around",alignItems:"center",paddingBottom:8,shadowOpacity:.08,shadowRadius:8,elevation:10},navItem:{flex:1,alignItems:"center",justifyContent:"center"},navIcon:{width:42,height:42,borderRadius:21,alignItems:"center",justifyContent:"center",backgroundColor:"#EEF1F4"},navIconActive:{backgroundColor:C.primary},navLabel:{fontSize:10,color:C.muted,fontWeight:"700",marginTop:3},navLabelActive:{color:C.primary,fontWeight:"800"},noticeRow:{flexDirection:"row-reverse",alignItems:"center",gap:12},noticeIcon:{width:50,height:50,borderRadius:25,backgroundColor:"#F1F3F5",alignItems:"center",justifyContent:"center"},profileHead:{flexDirection:"row-reverse",alignItems:"center",gap:12,marginBottom:10},profileIcon:{width:58,height:58,borderRadius:29,backgroundColor:"#F1F3F5",alignItems:"center",justifyContent:"center"}
 });

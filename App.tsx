@@ -1030,20 +1030,98 @@ export default function App() {
     </ScrollView>}
 
     {screen==="employeeRequests" && <ScrollView contentContainerStyle={[s.container,{paddingBottom:105}]}>
-      <View style={s.hero}><Text style={s.heroTitle}>طلبات الموظفين</Text><Text style={s.heroSub}>الطلبات المحالة إلى حسابك حسب مرحلة الاعتماد.</Text></View>
-      {employeeRequests.is_manager&&<View style={s.card}><Text style={s.title}>المدير المباشر</Text><Text style={s.sub}>طلبات الشكاوى والمقترحات المحالة إليك.</Text>
-        {employeeRequests.manager.map((r:any)=><View key={String(r.id)} style={s.responseCard}><Text style={s.responseTitle}>{r.title||r.case_number||"طلب موظف"}</Text><Text style={s.smallMuted}>{r.case_type==="GRIEVANCE"?"شكوى":"مقترح"} | الموظف: {r.requester_employee_name||r.requester_employee_number} | الحالة: {r.status}</Text><Text style={s.answerText}>{r.case_number||""}</Text><View style={s.chips}><Btn title="تمت المراجعة" onPress={async()=>{setBusy(true);try{await supabase.rpc("update_employee_workflow_task",{p_task_id:r.id,p_status:"COMPLETED",p_action_note:"تمت مراجعة الطلب من المدير المباشر"});await loadEmployeeRequests();}catch(e:any){Alert.alert("تعذر التحديث",errText(e));}finally{setBusy(false);}}}/><Btn title="فتح الوحدة" secondary onPress={()=>openModule(r.case_type==="GRIEVANCE"?"grievances":"suggestions")}/></View></View>)}
-        {!employeeRequests.manager.length&&<Text style={s.empty}>لا توجد طلبات معلقة للمدير المباشر.</Text>}
+      <View style={s.hero}>
+        <Text style={s.heroTitle}>طلبات الموظفين</Text>
+        <Text style={s.heroSub}>الطلبات المحالة إلى حسابك حسب مرحلة الاعتماد.</Text>
       </View>
-      {employeeRequests.is_services&&<View style={s.card}><Text style={s.title}>الخدمات الإدارية</Text><Text style={s.sub}>طلبات الموظفين المحالة إلى الخدمات.</Text>
-        {employeeRequests.services.map((r:any)=><View key={String(r.id)} style={s.responseCard}><Text style={s.responseTitle}>{r.title||r.request_number||"طلب خدمة"}</Text><Text style={s.smallMuted}>{r.request_number||""} | المرحلة: {r.current_stage||"—"} | الحالة: {r.status||"—"}</Text><Text style={s.answerText}>{r.description||""}</Text><Btn title="فتح الطلب" secondary onPress={()=>openModule("services")}/></View>)}
-        {!employeeRequests.services.length&&<Text style={s.empty}>لا توجد طلبات معلقة للخدمات الإدارية.</Text>}
-      </View>}
-      {employeeRequests.is_review&&<View style={s.card}><Text style={s.title}>المراجعة</Text><Text style={s.sub}>طلبات الموظفين المحالة إلى المراجعة.</Text>
-        {employeeRequests.review.map((r:any)=><View key={String(r.id)} style={s.responseCard}><Text style={s.responseTitle}>{r.title||r.request_number||"طلب خدمة"}</Text><Text style={s.smallMuted}>{r.request_number||""} | المرحلة: {r.current_stage||"—"} | الحالة: {r.status||"—"}</Text><Text style={s.answerText}>{r.description||""}</Text><Btn title="فتح الطلب" secondary onPress={()=>openModule("services")}/></View>)}
-        {!employeeRequests.review.length&&<Text style={s.empty}>لا توجد طلبات معلقة للمراجعة.</Text>}
-      </View>}
-      <Btn title="تحديث الطلبات" secondary disabled={busy} onPress={loadEmployeeRequests}/><Btn title="العودة إلى الرئيسية" secondary onPress={()=>setScreen("dashboard")}/>
+
+      {employeeRequests.is_manager && (
+        <View style={s.card}>
+          <Text style={s.title}>المدير المباشر</Text>
+          <Text style={s.sub}>طلبات الشكاوى والمقترحات المحالة إليك.</Text>
+          {employeeRequests.manager.map((r:any) => (
+            <View key={String(r.id)} style={s.responseCard}>
+              <Text style={s.responseTitle}>{r.title || r.case_number || "طلب موظف"}</Text>
+              <Text style={s.smallMuted}>
+                {r.case_type === "GRIEVANCE" ? "شكوى" : "مقترح"} | الموظف: {r.requester_employee_name || r.requester_employee_number} | الحالة: {r.status}
+              </Text>
+              <Text style={s.answerText}>{r.case_number || ""}</Text>
+              <View style={s.chips}>
+                <Btn
+                  title="تمت المراجعة"
+                  onPress={async () => {
+                    setBusy(true);
+                    try {
+                      const q = await supabase.rpc("update_employee_workflow_task", {
+                        p_task_id: r.id,
+                        p_status: "COMPLETED",
+                        p_action_note: "تمت مراجعة الطلب من المدير المباشر"
+                      });
+                      if (q.error) throw q.error;
+                      await loadEmployeeRequests();
+                    } catch (e:any) {
+                      Alert.alert("تعذر التحديث", errText(e));
+                    } finally {
+                      setBusy(false);
+                    }
+                  }}
+                />
+                <Btn
+                  title="فتح الوحدة"
+                  secondary
+                  onPress={() => openModule(r.case_type === "GRIEVANCE" ? "grievances" : "suggestions")}
+                />
+              </View>
+            </View>
+          ))}
+          {!employeeRequests.manager.length && (
+            <Text style={s.empty}>لا توجد طلبات معلقة للمدير المباشر.</Text>
+          )}
+        </View>
+      )}
+
+      {employeeRequests.is_services && (
+        <View style={s.card}>
+          <Text style={s.title}>الخدمات الإدارية</Text>
+          <Text style={s.sub}>طلبات الموظفين المحالة إلى الخدمات.</Text>
+          {employeeRequests.services.map((r:any) => (
+            <View key={String(r.id)} style={s.responseCard}>
+              <Text style={s.responseTitle}>{r.title || r.request_number || "طلب خدمة"}</Text>
+              <Text style={s.smallMuted}>
+                {r.request_number || ""} | المرحلة: {r.current_stage || "—"} | الحالة: {r.status || "—"}
+              </Text>
+              <Text style={s.answerText}>{r.description || ""}</Text>
+              <Btn title="فتح الطلب" secondary onPress={() => openModule("services")} />
+            </View>
+          ))}
+          {!employeeRequests.services.length && (
+            <Text style={s.empty}>لا توجد طلبات معلقة للخدمات الإدارية.</Text>
+          )}
+        </View>
+      )}
+
+      {employeeRequests.is_review && (
+        <View style={s.card}>
+          <Text style={s.title}>المراجعة</Text>
+          <Text style={s.sub}>طلبات الموظفين المحالة إلى المراجعة.</Text>
+          {employeeRequests.review.map((r:any) => (
+            <View key={String(r.id)} style={s.responseCard}>
+              <Text style={s.responseTitle}>{r.title || r.request_number || "طلب خدمة"}</Text>
+              <Text style={s.smallMuted}>
+                {r.request_number || ""} | المرحلة: {r.current_stage || "—"} | الحالة: {r.status || "—"}
+              </Text>
+              <Text style={s.answerText}>{r.description || ""}</Text>
+              <Btn title="فتح الطلب" secondary onPress={() => openModule("services")} />
+            </View>
+          ))}
+          {!employeeRequests.review.length && (
+            <Text style={s.empty}>لا توجد طلبات معلقة للمراجعة.</Text>
+          )}
+        </View>
+      )}
+
+      <Btn title="تحديث الطلبات" secondary disabled={busy} onPress={loadEmployeeRequests} />
+      <Btn title="العودة إلى الرئيسية" secondary onPress={() => setScreen("dashboard")} />
     </ScrollView>}
 
     {screen==="notifications" && <ScrollView contentContainerStyle={[s.container,{paddingBottom:105}]}>

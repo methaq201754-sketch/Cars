@@ -2,7 +2,7 @@
   "expo": {
     "name": "الخدمات الإدارية",
     "slug": "administrative-services",
-    "version": "2.1.17",
+    "version": "2.1.18",
     "orientation": "portrait",
     "userInterfaceStyle": "light",
     "icon": "./icon.png",
@@ -12,7 +12,7 @@
     },
     "android": {
       "package": "com.company.employee.survey",
-      "versionCode": 18,
+      "versionCode": 19,
       "minSdkVersion": 28,
       "adaptiveIcon": {
         "foregroundImage": "./icon.png",

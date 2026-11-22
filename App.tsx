@@ -56,7 +56,7 @@ const branchCodeOf = (r:any) => String(pick(r,["branch_code","code"]));
 const branchNameOf = (r:any) => String(pick(r,["branch_name","name","branch"]));
 
 export default function App() {
-  const [screen,setScreen] = useState<"login"|"dashboard"|"home"|"employee"|"survey"|"result"|"admin"|"workflow"|"employees"|"module"|"surveyHub"|"settings"|"notifications">("login");
+  const [screen,setScreen] = useState<"login"|"dashboard"|"home"|"employee"|"survey"|"result"|"admin"|"workflow"|"employees"|"module"|"surveyHub"|"settings"|"notifications"|"employeeRequests">("login");
   const [employeeNo,setEmployeeNo] = useState("");
   const [password,setPassword] = useState("");
   const [employee,setEmployee] = useState<Employee|null>(null);
@@ -101,6 +101,7 @@ export default function App() {
   const [moduleTab,setModuleTab] = useState<"mine"|"manage">("mine");
   const [surveyTab,setSurveyTab] = useState<"mine"|"manage">("mine");
   const [pendingCounts,setPendingCounts] = useState<Record<string,number>>({surveys:0,grievances:0,suggestions:0,services:0,assets:0});
+  const [employeeRequests,setEmployeeRequests] = useState<any>({manager:[],services:[],review:[],is_manager:false,is_services:false,is_review:false});
   const [moduleRows,setModuleRows] = useState<any[]>([]);
   const [moduleLookups,setModuleLookups] = useState<any[]>([]);
   const [moduleSearch,setModuleSearch] = useState("");
@@ -579,7 +580,28 @@ export default function App() {
   };
 
   const moduleTabCanReview=(key:string)=>{if(systemAdmin)return true;if(key==="grievances")return !!(permissions.GRIEVANCES_MANAGE||permissions.GRIEVANCES_INVESTIGATE||permissions.GRIEVANCES_DECIDE);if(key==="suggestions")return !!(permissions.IDEAS_REVIEW||permissions.IDEAS_IMPLEMENT);if(key==="services")return !!permissions.SERVICES_MANAGE;if(key==="assets")return !!(permissions.ASSETS_UPDATE||permissions.ASSETS_ASSIGN||permissions.ASSETS_MAINTAIN||permissions.ASSETS_MOVE||permissions.ASSETS_DISPOSE);return false;};
-  const loadPendingCounts=async()=>{const next={surveys:0,grievances:0,suggestions:0,services:0,assets:0};try{if(systemAdmin||permissions.SURVEYS_MANAGE){const r=await supabase.from("survey_control").select("survey_id").eq("is_enabled",true);next.surveys=r.error?0:(r.data?.length||0);}if(systemAdmin||moduleTabCanReview("grievances")){const r=await supabase.from("grievances").select("id",{count:"exact",head:true}).in("status",["SUBMITTED","UNDER_REVIEW","INVESTIGATION"]);next.grievances=r.error?0:(r.count||0);}if(systemAdmin||moduleTabCanReview("suggestions")){const r=await supabase.from("suggestions").select("id",{count:"exact",head:true}).in("status",["SUBMITTED","UNDER_REVIEW","REFERRED","APPROVED","IN_PROGRESS"]);next.suggestions=r.error?0:(r.count||0);}if(systemAdmin||moduleTabCanReview("services")){const r=await supabase.rpc("get_admin_service_requests_for_user");const rows=Array.isArray(r.data)?r.data:[];next.services=r.error?0:rows.filter((x:any)=>["SUBMITTED","MANAGER_APPROVED","SERVICES_PENDING","REVIEW_PENDING","IN_PROGRESS"].includes(String(x.status||"").toUpperCase())).length;}}catch(_e){}setPendingCounts(next);};
+  const loadEmployeeRequests=async()=>{
+    try{
+      const {data,error}=await supabase.rpc("get_my_pending_employee_requests");
+      if(error) throw error;
+      const d=(data&&typeof data==="object")?data:{};
+      const next={
+        manager:Array.isArray(d.manager)?d.manager:[],
+        services:Array.isArray(d.services)?d.services:[],
+        review:Array.isArray(d.review)?d.review:[],
+        is_manager:d.is_manager===true || d.is_manager==="true",
+        is_services:d.is_services===true || d.is_services==="true",
+        is_review:d.is_review===true || d.is_review==="true"
+      };
+      setEmployeeRequests(next);
+      return next;
+    }catch(e:any){
+      setEmployeeRequests({manager:[],services:[],review:[],is_manager:false,is_services:false,is_review:false});
+      return null;
+    }
+  };
+
+  const loadPendingCounts=async()=>{const next={surveys:0,grievances:0,suggestions:0,services:0,assets:0};try{if(systemAdmin||permissions.SURVEYS_MANAGE){const r=await supabase.from("survey_control").select("survey_id").eq("is_enabled",true);next.surveys=r.error?0:(r.data?.length||0);}if(systemAdmin||moduleTabCanReview("grievances")){const r=await supabase.from("grievances").select("id",{count:"exact",head:true}).in("status",["SUBMITTED","UNDER_REVIEW","INVESTIGATION"]);next.grievances=r.error?0:(r.count||0);}if(systemAdmin||moduleTabCanReview("suggestions")){const r=await supabase.from("suggestions").select("id",{count:"exact",head:true}).in("status",["SUBMITTED","UNDER_REVIEW","REFERRED","APPROVED","IN_PROGRESS"]);next.suggestions=r.error?0:(r.count||0);}if(systemAdmin||moduleTabCanReview("services")){const r=await supabase.rpc("get_admin_service_requests_for_user");const rows=Array.isArray(r.data)?r.data:[];next.services=r.error?0:rows.filter((x:any)=>["SUBMITTED","MANAGER_APPROVED","SERVICES_PENDING","REVIEW_PENDING","IN_PROGRESS"].includes(String(x.status||"").toUpperCase())).length;}}catch(_e){}setPendingCounts(next);await loadEmployeeRequests();};
   useEffect(()=>{if(employee)loadPendingCounts();},[employee,systemAdmin,permissions]);
 
   const moduleConfig:any={
@@ -671,6 +693,20 @@ export default function App() {
     return {branch,manager,servicesApprover,reviewApprover};
   };
 
+  const routeCreatedCase=async(caseType:string,caseData:any,userId:string)=>{
+    const caseId=String(pick(caseData,["id","case_id","grievance_id","suggestion_id"],""));
+    const caseNumber=String(pick(caseData,["grievance_number","suggestion_number","case_number","request_number"],""));
+    const title=String(pick(caseData,["subject","title"],"طلب موظف"));
+    if(!caseId) throw new Error("تم إنشاء الطلب، لكن لم يتم إرجاع رقم السجل لربطه بالمدير المباشر.");
+    const rr=await supabase.rpc("route_employee_case",{
+      p_case_type:caseType,p_case_id:caseId,p_case_number:caseNumber,p_title:title,
+      p_requester_employee_number:String(employee?.employee_number||""),
+      p_requester_employee_name:String(employee?.employee_name||"")
+    });
+    if(rr.error) throw rr.error;
+    return rr.data;
+  };
+
   const saveModuleRecord=async()=>{
     if(!moduleTitle.trim() && activeModule!=="assets"){Alert.alert("بيانات ناقصة","أدخل العنوان.");return;}
     const {data:{user}}=await supabase.auth.getUser();
@@ -688,14 +724,26 @@ export default function App() {
         if(!moduleDescription.trim()) throw new Error("أدخل تفاصيل الشكوى.");
         const r=await supabase.rpc("create_grievance",{p_category_id:moduleCategory,p_grievance_type:moduleType||"GENERAL",p_subject:moduleTitle.trim(),p_description:moduleDescription.trim(),p_requested_action:moduleExtra.trim()||null,p_confidentiality_level:moduleConfidentiality,p_is_anonymous:moduleAnonymous,p_priority:modulePriority});
         if(r.error) throw r.error;
-        Alert.alert("تم التقديم","تم تقديم الشكوى وحفظها في مسار المتابعة.");
+        let grievanceRow:any = Array.isArray(r.data)?r.data[0]:r.data;
+        if(!grievanceRow?.id){
+          const q=await supabase.from("grievances").select("id,grievance_number,subject,title").eq("created_by",user.id).order("created_at",{ascending:false}).limit(1).maybeSingle();
+          if(q.error) throw q.error; grievanceRow=q.data;
+        }
+        await routeCreatedCase("GRIEVANCE",grievanceRow,user.id);
+        Alert.alert("تم التقديم","تم تقديم الشكوى وتحويلها إلى المدير المباشر.");
       }else if(activeModule==="suggestions"){
         if(!moduleCategory) throw new Error("اختر تصنيف المقترح.");
         if(!moduleDescription.trim()) throw new Error("أدخل تفاصيل المقترح.");
         const cat=moduleLookups.find((x:any)=>String(x.id)===String(moduleCategory));
         const r=await supabase.rpc("create_suggestion",{p_category_code:String(pick(cat,["category_code"],moduleType||"GENERAL")),p_title:moduleTitle.trim(),p_description:moduleDescription.trim(),p_expected_benefit:moduleExtra.trim()||null,p_requested_action:moduleActionRequested||null,p_proposer_employee_id:(employee as any)?.id||null,p_department_id:(employee as any)?.department_id||null,p_priority:modulePriority});
         if(r.error) throw r.error;
-        Alert.alert("تم التقديم","تم تقديم المقترح بنجاح.");
+        let suggestionRow:any = Array.isArray(r.data)?r.data[0]:r.data;
+        if(!suggestionRow?.id){
+          const q=await supabase.from("suggestions").select("id,suggestion_number,title").eq("created_by",user.id).order("created_at",{ascending:false}).limit(1).maybeSingle();
+          if(q.error) throw q.error; suggestionRow=q.data;
+        }
+        await routeCreatedCase("SUGGESTION",suggestionRow,user.id);
+        Alert.alert("تم التقديم","تم تقديم المقترح وتحويله إلى المدير المباشر.");
       }else if(activeModule==="services"){
         if(!moduleCategory) throw new Error("اختر نوع الخدمة.");
         if(!moduleDescription.trim()) throw new Error("أدخل تفاصيل الطلب.");
@@ -830,6 +878,7 @@ export default function App() {
           {(systemAdmin||["ASSETS_VIEW","ASSETS_CREATE","ASSETS_UPDATE","ASSETS_ASSIGN","ASSETS_MAINTAIN","ASSETS_MOVE","ASSETS_DISPOSE"].some(k=>permissions[k]))&&<MainSectionCard icon="cube-outline" title="العهد والأصول" badge={pendingCounts.assets} text="العهد المسجلة وتسليمها وإخلاؤها وصيانتها." onPress={()=>openModule("assets")}/>}
         </View>
       </View>
+      {(employeeRequests.is_manager||employeeRequests.is_services||employeeRequests.is_review||employeeRequests.manager.length||employeeRequests.services.length||employeeRequests.review.length)&&<View style={s.card}><Text style={s.title}>طلبات الموظفين</Text><Text style={s.sub}>الطلبات المحالة إلى حسابك حسب مرحلة الصلاحية.</Text><View style={s.mainGrid}><MainSectionCard icon="git-branch-outline" title="طلبات الموظفين" badge={employeeRequests.manager.length+employeeRequests.services.length+employeeRequests.review.length} text={`المدير المباشر: ${employeeRequests.manager.length} | الخدمات: ${employeeRequests.services.length} | المراجعة: ${employeeRequests.review.length}`} onPress={async()=>{setBusy(true);try{await loadEmployeeRequests();setScreen("employeeRequests");}finally{setBusy(false);}}}/></View></View>}
       {(systemAdmin||permissions.EMPLOYEES_VIEW||permissions.REPORTS_VIEW)&&<View style={s.card}><Text style={s.title}>أدوات الإدارة</Text><Text style={s.sub}>وظائف إدارية إضافية لا تظهر ضمن الأقسام الخمسة الرئيسية.</Text>{(systemAdmin||permissions.EMPLOYEES_VIEW)&&<Btn title="إدارة الموظفين" secondary onPress={openEmployeeManagement}/>}
         {(systemAdmin||permissions.REPORTS_VIEW)&&<Btn title="التقارير والمؤشرات" secondary onPress={()=>openModule("reports")}/>}
         {systemAdmin&&<Btn title="مسارات الموافقات" secondary onPress={openWorkflowManagement}/>}</View>}
@@ -978,6 +1027,23 @@ export default function App() {
         </View>}
       </>}
       <Btn title="العودة إلى خدمات النظام" secondary onPress={()=>{setScreen("dashboard");setModuleSelected(null);}}/>
+    </ScrollView>}
+
+    {screen==="employeeRequests" && <ScrollView contentContainerStyle={[s.container,{paddingBottom:105}]}>
+      <View style={s.hero}><Text style={s.heroTitle}>طلبات الموظفين</Text><Text style={s.heroSub}>الطلبات المحالة إلى حسابك حسب مرحلة الاعتماد.</Text></View>
+      {employeeRequests.is_manager&&<View style={s.card}><Text style={s.title}>المدير المباشر</Text><Text style={s.sub}>طلبات الشكاوى والمقترحات المحالة إليك.</Text>
+        {employeeRequests.manager.map((r:any)=><View key={String(r.id)} style={s.responseCard}><Text style={s.responseTitle}>{r.title||r.case_number||"طلب موظف"}</Text><Text style={s.smallMuted}>{r.case_type==="GRIEVANCE"?"شكوى":"مقترح"} | الموظف: {r.requester_employee_name||r.requester_employee_number} | الحالة: {r.status}</Text><Text style={s.answerText}>{r.case_number||""}</Text><View style={s.chips}><Btn title="تمت المراجعة" onPress={async()=>{setBusy(true);try{await supabase.rpc("update_employee_workflow_task",{p_task_id:r.id,p_status:"COMPLETED",p_action_note:"تمت مراجعة الطلب من المدير المباشر"});await loadEmployeeRequests();}catch(e:any){Alert.alert("تعذر التحديث",errText(e));}finally{setBusy(false);}}}/><Btn title="فتح الوحدة" secondary onPress={()=>openModule(r.case_type==="GRIEVANCE"?"grievances":"suggestions")}/></View></View>)}
+        {!employeeRequests.manager.length&&<Text style={s.empty}>لا توجد طلبات معلقة للمدير المباشر.</Text>}
+      </View>
+      {employeeRequests.is_services&&<View style={s.card}><Text style={s.title}>الخدمات الإدارية</Text><Text style={s.sub}>طلبات الموظفين المحالة إلى الخدمات.</Text>
+        {employeeRequests.services.map((r:any)=><View key={String(r.id)} style={s.responseCard}><Text style={s.responseTitle}>{r.title||r.request_number||"طلب خدمة"}</Text><Text style={s.smallMuted}>{r.request_number||""} | المرحلة: {r.current_stage||"—"} | الحالة: {r.status||"—"}</Text><Text style={s.answerText}>{r.description||""}</Text><Btn title="فتح الطلب" secondary onPress={()=>openModule("services")}/></View>)}
+        {!employeeRequests.services.length&&<Text style={s.empty}>لا توجد طلبات معلقة للخدمات الإدارية.</Text>}
+      </View>}
+      {employeeRequests.is_review&&<View style={s.card}><Text style={s.title}>المراجعة</Text><Text style={s.sub}>طلبات الموظفين المحالة إلى المراجعة.</Text>
+        {employeeRequests.review.map((r:any)=><View key={String(r.id)} style={s.responseCard}><Text style={s.responseTitle}>{r.title||r.request_number||"طلب خدمة"}</Text><Text style={s.smallMuted}>{r.request_number||""} | المرحلة: {r.current_stage||"—"} | الحالة: {r.status||"—"}</Text><Text style={s.answerText}>{r.description||""}</Text><Btn title="فتح الطلب" secondary onPress={()=>openModule("services")}/></View>)}
+        {!employeeRequests.review.length&&<Text style={s.empty}>لا توجد طلبات معلقة للمراجعة.</Text>}
+      </View>}
+      <Btn title="تحديث الطلبات" secondary disabled={busy} onPress={loadEmployeeRequests}/><Btn title="العودة إلى الرئيسية" secondary onPress={()=>setScreen("dashboard")}/>
     </ScrollView>}
 
     {screen==="notifications" && <ScrollView contentContainerStyle={[s.container,{paddingBottom:105}]}>

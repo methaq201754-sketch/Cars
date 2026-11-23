@@ -17,7 +17,6 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: 20
-          cache: npm
 
       - name: Setup Java
         uses: actions/setup-java@v4
@@ -26,15 +25,12 @@ jobs:
           java-version: '17'
 
       - name: Install dependencies
-        run: npm ci
-
-      - name: Install Expo Build Properties
-        run: npx expo install expo-build-properties
+        run: npm install
 
       - name: Generate Android project
         run: npx expo prebuild --platform android --non-interactive --clean
 
-      - name: Build optimized Release APK
+      - name: Build Release APK
         working-directory: android
         run: ./gradlew assembleRelease --no-daemon
 

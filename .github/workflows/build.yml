@@ -1,3 +1,4 @@
+
 name: Build Android APK - HR System
 
 on:
@@ -30,20 +31,52 @@ jobs:
       - name: Generate Android project
         run: npx expo prebuild --platform android --non-interactive --clean
 
-      - name: Build Release APK
+      - name: Configure APK optimization
+        run: |
+          echo "android.enableProguardInReleaseBuilds=true" >> android/gradle.properties
+          echo "android.enableSeparateBuildPerCPUArchitecture=false" >> android/gradle.properties
+
+          python3 - <<'PY'
+          from pathlib import Path
+          import re
+
+          p = Path("android/app/build.gradle")
+          s = p.read_text()
+
+          s = re.sub(
+              r'include\s+"armeabi-v7a"\s*,\s*"arm64-v8a"\s*,\s*"x86"\s*,\s*"x86_64"',
+              'include "armeabi-v7a", "arm64-v8a"',
+              s
+          )
+
+          if "minifyEnabled enableProguardInReleaseBuilds" not in s:
+              raise SystemExit("Release minification setting not found")
+
+          if "shrinkResources" not in s:
+              s = s.replace(
+                  "minifyEnabled enableProguardInReleaseBuilds",
+                  "minifyEnabled enableProguardInReleaseBuilds\n            shrinkResources enableProguardInReleaseBuilds",
+                  1
+              )
+
+          p.write_text(s)
+          print("Configured universal ARM APK with code and resource shrinking.")
+          PY
+
+      - name: Build Universal APK
         working-directory: android
         run: ./gradlew assembleRelease --no-daemon
 
-      - name: Show APK size
+      - name: Verify APK
         run: |
-          echo "========== APK SIZE =========="
-          ls -lh android/app/build/outputs/apk/release/app-release.apk
-          du -h android/app/build/outputs/apk/release/app-release.apk
-          echo "=============================="
+          APK="android/app/build/outputs/apk/release/app-release.apk"
+          test -f "$APK"
+          ls -lh "$APK"
+          du -h "$APK"
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
-          name: hr-system-android-apk-optimized
+          name: hr-system-universal-apk
           path: android/app/build/outputs/apk/release/app-release.apk
           if-no-files-found: error

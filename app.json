@@ -2,7 +2,7 @@
   "expo": {
     "name": "الخدمات الإدارية",
     "slug": "administrative-services",
-    "version": "2.1.21",
+    "version": "2.1.22",
     "orientation": "portrait",
     "userInterfaceStyle": "light",
     "icon": "./icon.png",
@@ -12,12 +12,23 @@
     },
     "android": {
       "package": "com.company.employee.survey",
-      "versionCode": 22,
+      "versionCode": 23,
       "minSdkVersion": 28,
       "adaptiveIcon": {
         "foregroundImage": "./icon.png",
         "backgroundColor": "#FFFFFF"
       }
-    }
+    },
+    "plugins": [
+      [
+        "expo-build-properties",
+        {
+          "android": {
+            "minifyEnabled": true,
+            "shrinkResources": true
+          }
+        }
+      ]
+    ]
   }
 }

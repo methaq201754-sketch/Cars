@@ -1,34 +1,23 @@
 {
-  "expo": {
-    "name": "الخدمات الإدارية",
-    "slug": "administrative-services",
-    "version": "2.1.22",
-    "orientation": "portrait",
-    "userInterfaceStyle": "light",
-    "icon": "./icon.png",
-    "splash": {
-      "resizeMode": "contain",
-      "backgroundColor": "#C0272D"
-    },
-    "android": {
-      "package": "com.company.employee.survey",
-      "versionCode": 23,
-      "minSdkVersion": 28,
-      "adaptiveIcon": {
-        "foregroundImage": "./icon.png",
-        "backgroundColor": "#FFFFFF"
-      }
-    },
-    "plugins": [
-      [
-        "expo-build-properties",
-        {
-          "android": {
-            "minifyEnabled": true,
-            "shrinkResources": true
-          }
-        }
-      ]
-    ]
-  }
+"expo": {
+"name": "الخدمات الإدارية",
+"slug": "administrative-services",
+"version": "2.1.22",
+"orientation": "portrait",
+"userInterfaceStyle": "light",
+"icon": "./icon.png",
+"splash": {
+"resizeMode": "contain",
+"backgroundColor": "#C0272D"
+},
+"android": {
+"package": "com.company.employee.survey",
+"versionCode": 23,
+"minSdkVersion": 28,
+"adaptiveIcon": {
+"foregroundImage": "./icon.png",
+"backgroundColor": "#FFFFFF"
+}
+}
+}
 }

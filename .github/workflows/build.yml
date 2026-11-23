@@ -37,8 +37,8 @@ jobs:
       - name: Show APK size
         run: |
           echo "========== APK SIZE =========="
-          ls -lh app/build/outputs/apk/release/app-release.apk
-          du -h app/build/outputs/apk/release/app-release.apk
+          ls -lh android/app/build/outputs/apk/release/app-release.apk
+          du -h android/app/build/outputs/apk/release/app-release.apk
           echo "=============================="
 
       - name: Upload APK

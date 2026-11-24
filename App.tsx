@@ -8,6 +8,7 @@ import {
 } from "react-native";
 import { createClient } from "@supabase/supabase-js";
 import * as FileSystem from "expo-file-system";
+import * as ImagePicker from "expo-image-picker";
 import * as Sharing from "expo-sharing";
 import * as Print from "expo-print";
 
@@ -29,7 +30,7 @@ const SCALE_LOYALTY: [number,string][] = [[5,"أوافق بشدة"],[4,"أواف
 type Question = { question_no:number; domain_no:number; domain_name:string; question_text:string; is_morale_question?:boolean };
 type Period = { survey_id:number; start_at:string|null; end_at:string|null; is_enabled:boolean };
 type Survey = { id:number; survey_code:string; survey_name:string; description?:string; is_active:boolean; period:Period|null; questions:Question[] };
-type Employee = { employee_number:string; employee_name:string; is_survey_admin:boolean };
+type Employee = { id:string; employee_number:string; employee_name:string; is_survey_admin:boolean; department_id?:string|null };
 type ResponseRow = { id:number; survey_id:number; employee_number:string; employee_name:string|null; department:string; job_grade:string; service_years:number; qualification:string; morale_reason:string|null; domain1_average:number|null; domain2_average:number|null; domain3_average:number|null; overall_average:number|null; submitted_at:string; answers?:any[] };
 type WorkflowData = { branches:any[]; employees:any[]; managers:any[]; branch_approvers:any[] };
 
@@ -56,7 +57,7 @@ const branchCodeOf = (r:any) => String(pick(r,["branch_code","code"]));
 const branchNameOf = (r:any) => String(pick(r,["branch_name","name","branch"]));
 
 export default function App() {
-  const [screen,setScreen] = useState<"login"|"dashboard"|"home"|"employee"|"survey"|"result"|"admin"|"workflow"|"employees"|"module"|"surveyHub"|"settings"|"notifications"|"employeeRequests">("login");
+  const [screen,setScreen] = useState<"login"|"dashboard"|"home"|"employee"|"survey"|"result"|"admin"|"workflow"|"employees"|"module"|"surveyHub"|"settings"|"notifications"|"employeeRequests"|"assetRequest">("login");
   const [employeeNo,setEmployeeNo] = useState("");
   const [password,setPassword] = useState("");
   const [employee,setEmployee] = useState<Employee|null>(null);
@@ -121,8 +122,11 @@ export default function App() {
   const [moduleNotes,setModuleNotes] = useState("");
   const [moduleCost,setModuleCost] = useState("");
   const [moduleRelatedRows,setModuleRelatedRows] = useState<any[]>([]);
-  const [moduleConfidentiality,setModuleConfidentiality] = useState("normal");
   const [moduleAnonymous,setModuleAnonymous] = useState(false);
+  const [grievanceAttachment,setGrievanceAttachment] = useState<any>(null);
+  const [assetRequestName,setAssetRequestName] = useState("");
+  const [assetRequestReason,setAssetRequestReason] = useState("");
+  const [assetRequestSpecs,setAssetRequestSpecs] = useState("");
   const [moduleBranch,setModuleBranch] = useState("ADMINISTRATION");
   const [moduleRequiredDate,setModuleRequiredDate] = useState("");
   const [moduleActionRequested,setModuleActionRequested] = useState("");
@@ -266,9 +270,11 @@ export default function App() {
     }catch(_e){ surveyAdmin=false; }
 
     const emp:Employee={
+      id:String(empRow.id),
       employee_number:empRow.employee_number,
       employee_name:profile?.display_name||empRow.employee_name,
-      is_survey_admin:surveyAdmin || permissionMap.SURVEYS_MANAGE===true || isSystemAdministrator
+      is_survey_admin:surveyAdmin || permissionMap.SURVEYS_MANAGE===true || isSystemAdministrator,
+      department_id:empRow.department_id||null
     };
     setEmployee(emp);
     setEmployeeNo(emp.employee_number);
@@ -581,6 +587,78 @@ export default function App() {
   };
 
   const moduleTabCanReview=(key:string)=>{if(systemAdmin)return true;if(key==="grievances")return !!(permissions.GRIEVANCES_MANAGE||permissions.GRIEVANCES_INVESTIGATE||permissions.GRIEVANCES_DECIDE);if(key==="suggestions")return !!(permissions.IDEAS_REVIEW||permissions.IDEAS_IMPLEMENT);if(key==="services")return !!permissions.SERVICES_MANAGE;if(key==="assets")return !!(permissions.ASSETS_UPDATE||permissions.ASSETS_ASSIGN||permissions.ASSETS_MAINTAIN||permissions.ASSETS_MOVE||permissions.ASSETS_DISPOSE);return false;};
+  const submitAssetRequest=async()=>{
+    if(!assetRequestName.trim()||!assetRequestReason.trim()){
+      Alert.alert("بيانات ناقصة","أدخل اسم الجهاز أو الأصل وسبب الاحتياج.");return;
+    }
+    setBusy(true);
+    try{
+      const r=await supabase.rpc("create_employee_asset_request",{
+        p_asset_description:assetRequestName.trim(),
+        p_reason:assetRequestReason.trim(),
+        p_specifications:assetRequestSpecs.trim()||null
+      });
+      if(r.error) throw r.error;
+      setAssetRequestName("");setAssetRequestReason("");setAssetRequestSpecs("");
+      Alert.alert("تم تقديم الطلب","تم إرسال طلب العهدة إلى المدير المباشر.");
+      setScreen("dashboard");
+      await loadEmployeeRequests();
+    }catch(e:any){Alert.alert("تعذر تقديم طلب العهدة",errText(e));}
+    finally{setBusy(false);}
+  };
+
+  const printEmployeeRequest=async(r:any,stageLabel:string)=>{
+    try{
+      const esc=(v:any)=>String(v??"—").replace(/[&<>"']/g,(c)=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c] as string));
+      const rows=[
+        ["نوع الطلب",requestTypeLabel(r)],
+        ["رقم الطلب",pick(r,["case_number","request_number"],"—")],
+        ["مقدم الطلب",pick(r,["requester_employee_name","employee_name"],"—")],
+        ["الرقم الوظيفي",pick(r,["requester_employee_number","employee_number"],"—")],
+        ["العنوان",pick(r,["title","asset_description","subject"],"—")],
+        ["التفاصيل",pick(r,["description","reason","specifications"],"—")],
+        ["الحالة",pick(r,["status"],"—")],
+        ["مرحلة العرض",stageLabel],
+        ["تاريخ التقديم",pick(r,["created_at"],"—")]
+      ];
+      const html=`<html><head><meta charset="utf-8"><style>body{font-family:Arial,sans-serif;direction:rtl;padding:28px;color:#20252b}h2{color:#9E1F24;text-align:center}table{width:100%;border-collapse:collapse;margin-top:24px}td{border:1px solid #ccc;padding:10px;vertical-align:top}td:first-child{font-weight:bold;width:30%;background:#f4f7fb}.foot{margin-top:35px;color:#68727d;font-size:12px;text-align:center}</style></head><body><h2>الشركة اليمنية لصناعة الطلاء ومشتقاته المحدودة</h2><h3 style="text-align:center">تفاصيل طلب موظف</h3><table>${rows.map(x=>`<tr><td>${esc(x[0])}</td><td>${esc(x[1])}</td></tr>`).join("")}</table><div class="foot">تم إنشاء هذه النسخة إلكترونياً من نظام الموارد البشرية</div></body></html>`;
+      const file=await Print.printToFileAsync({html});
+      if(await Sharing.isAvailableAsync()) await Sharing.shareAsync(file.uri,{mimeType:"application/pdf",dialogTitle:"معاينة / طباعة الطلب"});
+      else await Print.printAsync({html});
+    }catch(e:any){Alert.alert("تعذر إنشاء PDF",errText(e));}
+  };
+
+  const requestTypeLabel=(r:any)=>{
+    const type=String(r?.case_type||r?.request_type||"").toUpperCase();
+    if(type==="ADMIN_SERVICE_REQUEST" && /PERMIT|تصريح/i.test(String(r?.service_code||r?.service_type||""))) return "تصريح";
+    return ({GRIEVANCE:"شكوى",APPEAL:"تظلم",SUGGESTION:"مقترح",ASSET_REQUEST:"طلب عهدة",PERMIT:"تصريح",ADMIN_SERVICE_REQUEST:"طلب خدمة"} as Record<string,string>)[type]||"طلب موظف";
+  };
+
+  const decideRequestAtStage=async(r:any,decision:"APPROVED"|"REJECTED")=>{
+    if(decision==="REJECTED"&&!String(moduleNotes||"").trim()){
+      Alert.alert("ملاحظة الرفض","أدخل سبب الرفض في خانة الملاحظات أولاً.");return;
+    }
+    setBusy(true);
+    try{
+      if(String(r.case_type||"").toUpperCase()==="ADMIN_SERVICE_REQUEST"){
+        const q=decision==="APPROVED"
+          ?await supabase.rpc("approve_admin_service_request",{p_request_id:r.id})
+          :await supabase.rpc("reject_admin_service_request",{p_request_id:r.id,p_reason:moduleNotes.trim()});
+        if(q.error) throw q.error;
+      }else{
+        const q=await supabase.rpc("update_employee_workflow_task",{
+          p_task_id:r.id,p_status:decision,
+          p_action_note:moduleNotes.trim()||(decision==="APPROVED"?"تمت الموافقة":"تم الرفض")
+        });
+        if(q.error) throw q.error;
+      }
+      setModuleNotes("");
+      Alert.alert("تم حفظ الإجراء",decision==="APPROVED"?"تم اعتماد الطلب وتحويله للمرحلة التالية.":"تم رفض الطلب وإيقاف مساره.");
+      await loadEmployeeRequests();
+    }catch(e:any){Alert.alert("تعذر تنفيذ الإجراء",errText(e));}
+    finally{setBusy(false);}
+  };
+
   const loadEmployeeRequests=async()=>{
     try{
       const {data,error}=await supabase.rpc("get_my_pending_employee_requests");
@@ -642,7 +720,7 @@ export default function App() {
   };
 
   const openModule=async(key:"assets"|"grievances"|"suggestions"|"services"|"reports")=>{
-    const allowed=systemAdmin || (key==="reports"?permissions.REPORTS_VIEW:moduleConfig[key].access.some((code:string)=>permissions[code]));
+    const allowed=systemAdmin || (key==="assets" && !!employee) || (key==="reports"?permissions.REPORTS_VIEW:moduleConfig[key].access.some((code:string)=>permissions[code]));
     if(!allowed){Alert.alert("غير مصرح","لا تملك صلاحية فتح هذه الوحدة.");return;}
     setActiveModule(key);setModuleSearch("");setModuleSelected(null);setModuleShowForm(false);setGrievanceEntryChoice(null);setModuleRelatedRows([]);setModuleTab("mine");setBusy(true);
     try{
@@ -658,37 +736,54 @@ export default function App() {
 
   const resetModuleForm=()=>{
     setModuleTitle("");setModuleDescription("");setModuleType("");setModuleCategory("");setModulePriority("NORMAL");setModuleExtra("");
-    setModuleConfidentiality("normal");setModuleAnonymous(false);setModuleBranch("ADMINISTRATION");setModuleRequiredDate("");setModuleActionRequested("");
+    setModuleAnonymous(false);
+setGrievanceAttachment(null);setModuleBranch("ADMINISTRATION");setModuleRequiredDate("");setModuleActionRequested("");
     setModuleSelected(null);setModuleShowForm(false);setGrievanceEntryChoice(null);
   };
 
   const resolveServiceWorkflow=async()=>{
     let branch=moduleBranch||"ADMINISTRATION", manager="", servicesApprover="", reviewApprover="";
+    let branchId="";
     try{
-      const ew=await supabase.from("employee_workflow_assignments").select("*").eq("employee_number",employee?.employee_number||"").maybeSingle();
+      const ew=await supabase.from("employee_workflow_assignments").select("branch_id,manager_employee_id,valid_from,valid_until,is_active,id").eq("employee_id",String((employee as any)?.id||"")).eq("is_active",true).order("valid_from",{ascending:false,nullsFirst:false}).limit(1).maybeSingle();
       if(!ew.error && ew.data){
-        branch=String(pick(ew.data,["branch_code","branch"],branch));
-        manager=String(pick(ew.data,["manager_employee_number","manager_number"],""));
+        branchId=String(ew.data.branch_id||"");
+        if(ew.data.manager_employee_id){
+          const mq=await supabase.from("employees").select("employee_number").eq("id",ew.data.manager_employee_id).maybeSingle();
+          if(!mq.error && mq.data) manager=String(mq.data.employee_number||"");
+        }
+        const localBranch=(workflowData.branches||[]).find((b:any)=>String(pick(b,["id","branch_id"],""))===branchId);
+        branch=String(pick(localBranch,["branch_code","code"],branch));
       }
     }catch(_e){}
     try{
-      const ba=await supabase.from("workflow_branch_approvers").select("*").eq("branch_code",branch).eq("is_active",true);
-      if(!ba.error){
+      if(branchId){
+        const ba=await supabase.from("workflow_branch_approvers").select("id,user_id,role_code,is_active,created_at").eq("branch_id",branchId).eq("is_active",true);
         for(const a of ba.data||[]){
-          const role=String(pick(a,["role_code","approver_role"],""));
-          const no=String(pick(a,["employee_number","approver_employee_number","user_employee_number"],""));
-          if(role==="SERVICES_ADMIN") servicesApprover=no;
-          if(role==="REQUEST_AUDITOR") reviewApprover=no;
+          const pq=await supabase.from("user_profiles").select("employee_id").eq("user_id",a.user_id).maybeSingle();
+          if(pq.data?.employee_id){
+            const eq=await supabase.from("employees").select("employee_number").eq("id",pq.data.employee_id).maybeSingle();
+            const no=String(eq.data?.employee_number||"");
+            if(String(a.role_code)==="SERVICES_ADMIN") servicesApprover=no;
+            if(String(a.role_code)==="REQUEST_AUDITOR") reviewApprover=no;
+          }
         }
       }
     }catch(_e){}
+    if(!manager){
+      try{
+        const local=(workflowData.managers||[]).find((m:any)=>employeeNoOf(m)===String(employee?.employee_number||""));
+        manager=String(pick(local,["manager_employee_number","manager_number"],""));
+      }catch(_e){}
+    }
     if(!servicesApprover || !reviewApprover){
       const local=workflowData.branch_approvers||[];
       for(const a of local){
-        if(String(pick(a,["branch_code"],""))!==branch) continue;
-        const role=String(pick(a,["role_code"],"")); const no=employeeNoOf(a);
-        if(role==="SERVICES_ADMIN") servicesApprover=no;
-        if(role==="REQUEST_AUDITOR") reviewApprover=no;
+        const aBranch=String(pick(a,["branch_code","code"],""));
+        if(aBranch && aBranch!==branch) continue;
+        const role=String(pick(a,["role_code","approver_role"],"")); const no=employeeNoOf(a);
+        if(role==="SERVICES_ADMIN" && no) servicesApprover=no;
+        if(role==="REQUEST_AUDITOR" && no) reviewApprover=no;
       }
     }
     return {branch,manager,servicesApprover,reviewApprover};
@@ -708,6 +803,14 @@ export default function App() {
     return rr.data;
   };
 
+  const chooseGrievanceAttachment=async()=>{
+    Alert.alert("إرفاق مرفق","اختر مصدر المرفق",[
+      {text:"الكاميرا",onPress:async()=>{try{const p=await ImagePicker.requestCameraPermissionsAsync();if(!p.granted){Alert.alert("صلاحية الكاميرا","اسمح للتطبيق باستخدام الكاميرا من إعدادات الجهاز.");return;}const r=await ImagePicker.launchCameraAsync({mediaTypes:["images"],quality:0.8});if(!r.canceled&&r.assets?.[0])setGrievanceAttachment(r.assets[0]);}catch(e:any){Alert.alert("تعذر فتح الكاميرا",e?.message||"حدث خطأ غير متوقع.");}}},
+      {text:"المعرض",onPress:async()=>{try{const p=await ImagePicker.requestMediaLibraryPermissionsAsync();if(!p.granted){Alert.alert("صلاحية المعرض","اسمح للتطبيق بالوصول إلى الصور من إعدادات الجهاز.");return;}const r=await ImagePicker.launchImageLibraryAsync({mediaTypes:["images"],quality:0.8});if(!r.canceled&&r.assets?.[0])setGrievanceAttachment(r.assets[0]);}catch(e:any){Alert.alert("تعذر فتح المعرض",e?.message||"حدث خطأ غير متوقع.");}}},
+      {text:"إلغاء",style:"cancel"}
+    ]);
+  };
+
   const saveModuleRecord=async()=>{
     if(!moduleTitle.trim() && activeModule!=="assets"){Alert.alert("بيانات ناقصة","أدخل العنوان.");return;}
     const {data:{user}}=await supabase.auth.getUser();
@@ -723,14 +826,32 @@ export default function App() {
       }else if(activeModule==="grievances"){
         if(!moduleCategory) throw new Error("اختر تصنيف الشكوى.");
         if(!moduleDescription.trim()) throw new Error("أدخل تفاصيل الشكوى.");
-        const r=await supabase.rpc("create_grievance",{p_category_id:moduleCategory,p_grievance_type:moduleType||"GENERAL",p_subject:moduleTitle.trim(),p_description:moduleDescription.trim(),p_requested_action:moduleExtra.trim()||null,p_confidentiality_level:moduleConfidentiality,p_is_anonymous:moduleAnonymous,p_priority:modulePriority});
+        const r=await supabase.rpc("create_grievance",{p_category_id:moduleCategory,p_grievance_type:moduleType||"GENERAL",p_subject:moduleTitle.trim(),p_description:moduleDescription.trim(),p_requested_action:moduleExtra.trim()||null,p_confidentiality_level:null,p_is_anonymous:moduleAnonymous,p_priority:null});
         if(r.error) throw r.error;
         let grievanceRow:any = Array.isArray(r.data)?r.data[0]:r.data;
         if(!grievanceRow?.id){
           const q=await supabase.from("grievances").select("id,grievance_number,subject,title").eq("created_by",user.id).order("created_at",{ascending:false}).limit(1).maybeSingle();
           if(q.error) throw q.error; grievanceRow=q.data;
         }
-        await routeCreatedCase("GRIEVANCE",grievanceRow,user.id);
+        await routeCreatedCase(grievanceEntryChoice==="APPEAL"?"APPEAL":"GRIEVANCE",grievanceRow,user.id);
+        if(grievanceAttachment?.uri && grievanceRow?.id){
+          try{
+            const ext=String(grievanceAttachment.fileName||"photo.jpg").split(".").pop()||"jpg";
+            const safeExt=ext.toLowerCase().replace(/[^a-z0-9]/g,"")||"jpg";
+            const path=`${user.id}/${String(grievanceRow.id)}/${Date.now()}.${safeExt}`;
+            const blob=await (await fetch(grievanceAttachment.uri)).blob();
+            const up=await supabase.storage.from("grievance-attachments").upload(path,blob,{contentType:grievanceAttachment.mimeType||"image/jpeg",upsert:false});
+            if(up.error) throw up.error;
+            const ar=await supabase.from("grievance_attachments").insert({grievance_id:grievanceRow.id,uploaded_by:user.id,file_name:grievanceAttachment.fileName||"مرفق",file_path:path,mime_type:grievanceAttachment.mimeType||"image/jpeg",file_size:grievanceAttachment.fileSize||null});
+            if(ar.error) throw ar.error;
+          }catch(attErr:any){
+            console.warn("تعذر حفظ مرفق الشكوى:",attErr?.message||attErr);
+            setGrievanceAttachment(null);
+            Alert.alert("تم تقديم الشكوى","تم تحويل الشكوى إلى المدير المباشر، لكن تعذر حفظ المرفق. يمكنك إرفاقه لاحقاً.");
+            return;
+          }
+        }
+        setGrievanceAttachment(null);
         Alert.alert("تم التقديم","تم تقديم الشكوى وتحويلها إلى المدير المباشر.");
       }else if(activeModule==="suggestions"){
         if(!moduleCategory) throw new Error("اختر تصنيف المقترح.");
@@ -878,8 +999,10 @@ export default function App() {
           {(systemAdmin||["IDEAS_VIEW","IDEAS_CREATE","IDEAS_REVIEW","IDEAS_IMPLEMENT"].some(k=>permissions[k]))&&<MainSectionCard icon="bulb-outline" title="المقترحات" badge={pendingCounts.suggestions} text="إضافة الأفكار وتقييمها ومتابعة تنفيذها." onPress={()=>openModule("suggestions")}/>}
           {(systemAdmin||["SERVICES_VIEW","SERVICES_CREATE","SERVICES_MANAGE"].some(k=>permissions[k]))&&<MainSectionCard icon="briefcase-outline" title="الخدمات الإدارية" badge={pendingCounts.services} text="طلبات الخدمات ومسار الاعتماد والتنفيذ." onPress={()=>openModule("services")}/>}
           {(systemAdmin||["ASSETS_VIEW","ASSETS_CREATE","ASSETS_UPDATE","ASSETS_ASSIGN","ASSETS_MAINTAIN","ASSETS_MOVE","ASSETS_DISPOSE"].some(k=>permissions[k]))&&<MainSectionCard icon="cube-outline" title="العهد والأصول" badge={pendingCounts.assets} text="العهد المسجلة وتسليمها وإخلاؤها وصيانتها." onPress={()=>openModule("assets")}/>}
+          <MainSectionCard icon="clipboard-outline" title="عهدتي" text="عرض الأجهزة والأصول المسجلة بعهدتك حالياً." onPress={()=>openModule("assets")}/>
         </View>
       </View>
+      <View style={s.card}><MainSectionCard icon="laptop-outline" title="طلب عهدة" text="طلب جهاز أو أصل تحتاجه لأداء مهام العمل، ومتابعة اعتماده." onPress={()=>setScreen("assetRequest")}/></View>
       {Boolean(employeeRequests.is_manager||employeeRequests.is_services||employeeRequests.is_review||employeeRequests.manager.length||employeeRequests.services.length||employeeRequests.review.length)&&<View style={s.card}><Text style={s.title}>طلبات الموظفين</Text><Text style={s.sub}>الطلبات المحالة إلى حسابك حسب مرحلة الصلاحية.</Text><View style={s.mainGrid}><MainSectionCard icon="git-branch-outline" title="طلبات الموظفين" badge={employeeRequests.manager.length+employeeRequests.services.length+employeeRequests.review.length} text={`المدير المباشر: ${employeeRequests.manager.length} | الخدمات: ${employeeRequests.services.length} | المراجعة: ${employeeRequests.review.length}`} onPress={async()=>{setBusy(true);try{await loadEmployeeRequests();setScreen("employeeRequests");}finally{setBusy(false);}}}/></View></View>}
       {(systemAdmin||permissions.EMPLOYEES_VIEW||permissions.REPORTS_VIEW)&&<View style={s.card}><Text style={s.title}>أدوات الإدارة</Text><Text style={s.sub}>وظائف إدارية إضافية لا تظهر ضمن الأقسام الخمسة الرئيسية.</Text>{(systemAdmin||permissions.EMPLOYEES_VIEW)&&<Btn title="إدارة الموظفين" secondary onPress={openEmployeeManagement}/>}
         {(systemAdmin||permissions.REPORTS_VIEW)&&<Btn title="التقارير والمؤشرات" secondary onPress={()=>openModule("reports")}/>}
@@ -1085,8 +1208,8 @@ export default function App() {
             <Text style={s.label}>التصنيف</Text><View style={s.chips}>{moduleLookups.map((x:any)=><Pressable key={String(x.id)} onPress={()=>setModuleCategory(String(x.id))} style={[s.chip,moduleCategory===String(x.id)&&s.chipActive]}><Text style={[s.chipText,moduleCategory===String(x.id)&&s.white]}>{String(pick(x,["category_name","category_code"],"تصنيف"))}</Text></Pressable>)}</View>
             <Field label="العنوان" value={moduleTitle} onChangeText={setModuleTitle} placeholder={grievanceEntryChoice==="APPEAL"?"عنوان التظلم":"عنوان الشكوى"}/>
             <Field label="التفاصيل" value={moduleDescription} onChangeText={setModuleDescription} placeholder={grievanceEntryChoice==="APPEAL"?"وضح القرار أو الإجراء محل التظلم":"اكتب تفاصيل الشكوى"} multiline/>
-            <Text style={s.label}>الأولوية</Text><View style={s.chips}>{[["LOW","منخفضة"],["NORMAL","عادية"],["HIGH","عالية"],["URGENT","عاجلة"]].map(([v,l])=><Pressable key={v} onPress={()=>setModulePriority(v)} style={[s.chip,modulePriority===v&&s.chipActive]}><Text style={[s.chipText,modulePriority===v&&s.white]}>{l}</Text></Pressable>)}</View>
-            <Text style={s.label}>السرية</Text><View style={s.chips}>{[["normal","عادية"],["high","عالية"],["strict","مشددة"]].map(([v,l])=><Pressable key={v} onPress={()=>setModuleConfidentiality(v)} style={[s.chip,moduleConfidentiality===v&&s.chipActive]}><Text style={[s.chipText,moduleConfidentiality===v&&s.white]}>{l}</Text></Pressable>)}</View>
+            <Pressable onPress={()=>chooseGrievanceAttachment()} style={s.attachmentButton}><Ionicons name="attach-outline" size={21} color={C.primary}/><Text style={s.attachmentButtonText}>{grievanceAttachment?`المرفق: ${grievanceAttachment.fileName||"صورة"}`:"إرفاق مرفق"}</Text></Pressable>
+            {grievanceAttachment?.uri&&<View style={s.attachmentPreview}><Text style={s.smallMuted}>تم اختيار المرفق وسيتم رفعه مع الطلب.</Text><Pressable onPress={()=>setGrievanceAttachment(null)}><Text style={s.changeType}>حذف المرفق</Text></Pressable></View>}
             <Pressable onPress={()=>setModuleAnonymous(v=>!v)} style={s.toggle}><Text style={s.label}>الشكوى المجهولة</Text><Text style={[s.toggleValue,{color:moduleAnonymous?C.success:C.muted}]}>{moduleAnonymous?"مفعلة":"غير مفعلة"}</Text></Pressable>
             <Field label="الإجراء المطلوب" value={moduleExtra} onChangeText={setModuleExtra} placeholder="ما الإجراء الذي تطلبه؟" multiline/>
             <Btn title={grievanceEntryChoice==="APPEAL"?"إرسال التظلم":"إرسال الشكوى"} disabled={busy} onPress={saveModuleRecord}/>
@@ -1124,7 +1247,7 @@ export default function App() {
             </View>
           </>}
           {activeModule==="assets"&&<><Field label="رمز الأصل" value={moduleExtra} onChangeText={setModuleExtra} placeholder="مثال: AST-0001"/><Field label="اسم الأصل" value={moduleTitle} onChangeText={setModuleTitle} placeholder="اسم الأصل"/><Text style={s.label}>تصنيف الأصل</Text><View style={s.chips}>{moduleLookups.map((x:any)=><Pressable key={String(x.id)} onPress={()=>setModuleCategory(String(x.id))} style={[s.chip,moduleCategory===String(x.id)&&s.chipActive]}><Text style={[s.chipText,moduleCategory===String(x.id)&&s.white]}>{String(pick(x,["category_name","category_code"],"تصنيف"))}</Text></Pressable>)}</View><Field label="الرقم الوظيفي للعهدة" value={moduleEmployeeNo} onChangeText={setModuleEmployeeNo} keyboardType="numeric" placeholder="رقم الموظف المستلم"/><Field label="تفاصيل الأصل" value={moduleDescription} onChangeText={setModuleDescription} placeholder="الوصف" multiline/></>}
-          {activeModule==="grievances"&&grievanceEntryChoice&&<><Text style={s.label}>التصنيف</Text><View style={s.chips}>{moduleLookups.map((x:any)=><Pressable key={String(x.id)} onPress={()=>setModuleCategory(String(x.id))} style={[s.chip,moduleCategory===String(x.id)&&s.chipActive]}><Text style={[s.chipText,moduleCategory===String(x.id)&&s.white]}>{String(pick(x,["category_name","category_code"],"تصنيف"))}</Text></Pressable>)}</View><Field label="نوع الشكوى" value={moduleType} onChangeText={setModuleType} placeholder="GENERAL"/><Field label="العنوان" value={moduleTitle} onChangeText={setModuleTitle} placeholder="عنوان الشكوى"/><Field label="التفاصيل" value={moduleDescription} onChangeText={setModuleDescription} placeholder="تفاصيل الشكوى" multiline/><Text style={s.label}>الأولوية</Text><View style={s.chips}>{[["LOW","منخفضة"],["NORMAL","عادية"],["HIGH","عالية"],["URGENT","عاجلة"]].map(([v,l])=><Pressable key={v} onPress={()=>setModulePriority(v)} style={[s.chip,modulePriority===v&&s.chipActive]}><Text style={[s.chipText,modulePriority===v&&s.white]}>{l}</Text></Pressable>)}</View><Text style={s.label}>السرية</Text><View style={s.chips}>{[["normal","عادية"],["high","عالية"],["strict","مشددة"]].map(([v,l])=><Pressable key={v} onPress={()=>setModuleConfidentiality(v)} style={[s.chip,moduleConfidentiality===v&&s.chipActive]}><Text style={[s.chipText,moduleConfidentiality===v&&s.white]}>{l}</Text></Pressable>)}</View><Pressable onPress={()=>setModuleAnonymous(v=>!v)} style={s.toggle}><Text style={s.label}>الشكوى المجهولة</Text><Text style={[s.toggleValue,{color:moduleAnonymous?C.success:C.muted}]}>{moduleAnonymous?"مفعلة":"غير مفعلة"}</Text></Pressable><Field label="الإجراء المطلوب" value={moduleExtra} onChangeText={setModuleExtra} placeholder="ما الإجراء الذي تطلبه؟" multiline/></>}
+          {activeModule==="grievances"&&grievanceEntryChoice&&<><Text style={s.label}>التصنيف</Text><View style={s.chips}>{moduleLookups.map((x:any)=><Pressable key={String(x.id)} onPress={()=>setModuleCategory(String(x.id))} style={[s.chip,moduleCategory===String(x.id)&&s.chipActive]}><Text style={[s.chipText,moduleCategory===String(x.id)&&s.white]}>{String(pick(x,["category_name","category_code"],"تصنيف"))}</Text></Pressable>)}</View><Field label="نوع الشكوى" value={moduleType} onChangeText={setModuleType} placeholder="GENERAL"/><Field label="العنوان" value={moduleTitle} onChangeText={setModuleTitle} placeholder="عنوان الشكوى"/><Field label="التفاصيل" value={moduleDescription} onChangeText={setModuleDescription} placeholder="تفاصيل الشكوى" multiline/><Pressable onPress={()=>chooseGrievanceAttachment()} style={s.attachmentButton}><Ionicons name="attach-outline" size={21} color={C.primary}/><Text style={s.attachmentButtonText}>{grievanceAttachment?`المرفق: ${grievanceAttachment.fileName||"صورة"}`:"إرفاق مرفق"}</Text></Pressable>{grievanceAttachment?.uri&&<View style={s.attachmentPreview}><Text style={s.smallMuted}>تم اختيار المرفق وسيتم رفعه مع الطلب.</Text><Pressable onPress={()=>setGrievanceAttachment(null)}><Text style={s.changeType}>حذف المرفق</Text></Pressable></View>}<Pressable onPress={()=>setModuleAnonymous(v=>!v)} style={s.toggle}><Text style={s.label}>الشكوى المجهولة</Text><Text style={[s.toggleValue,{color:moduleAnonymous?C.success:C.muted}]}>{moduleAnonymous?"مفعلة":"غير مفعلة"}</Text></Pressable><Field label="الإجراء المطلوب" value={moduleExtra} onChangeText={setModuleExtra} placeholder="ما الإجراء الذي تطلبه؟" multiline/></>}
           {activeModule==="suggestions"&&<><Text style={s.label}>التصنيف</Text><View style={s.chips}>{moduleLookups.map((x:any)=><Pressable key={String(x.id)} onPress={()=>setModuleCategory(String(x.id))} style={[s.chip,moduleCategory===String(x.id)&&s.chipActive]}><Text style={[s.chipText,moduleCategory===String(x.id)&&s.white]}>{String(pick(x,["category_name","category_code"],"تصنيف"))}</Text></Pressable>)}</View><Field label="العنوان" value={moduleTitle} onChangeText={setModuleTitle} placeholder="عنوان المقترح"/><Field label="التفاصيل" value={moduleDescription} onChangeText={setModuleDescription} placeholder="تفاصيل المقترح" multiline/><Field label="الفائدة المتوقعة" value={moduleExtra} onChangeText={setModuleExtra} placeholder="ما الفائدة المتوقعة؟" multiline/><Field label="الإجراء المطلوب" value={moduleActionRequested} onChangeText={setModuleActionRequested} placeholder="الإجراء المقترح للتنفيذ" multiline/><Text style={s.label}>الأولوية</Text><View style={s.chips}>{[["LOW","منخفضة"],["NORMAL","عادية"],["HIGH","عالية"],["URGENT","عاجلة"]].map(([v,l])=><Pressable key={v} onPress={()=>setModulePriority(v)} style={[s.chip,modulePriority===v&&s.chipActive]}><Text style={[s.chipText,modulePriority===v&&s.white]}>{l}</Text></Pressable>)}</View></>}
           {activeModule==="services"&&<><Text style={s.label}>نوع التصريح / الخدمة</Text><View style={s.chips}>{moduleLookups.map((x:any)=><Pressable key={String(x.id)} onPress={()=>setModuleCategory(String(x.id))} style={[s.chip,moduleCategory===String(x.id)&&s.chipActive]}><Text style={[s.chipText,moduleCategory===String(x.id)&&s.white]}>{String(pick(x,["service_name","service_code"],"خدمة"))}</Text></Pressable>)}</View><Field label="العنوان" value={moduleTitle} onChangeText={setModuleTitle} placeholder="عنوان الطلب"/><Field label="التفاصيل" value={moduleDescription} onChangeText={setModuleDescription} placeholder="تفاصيل الطلب" multiline/><Text style={s.label}>الفرع</Text><View style={s.chips}>{[["NAQIL","النقيل"],["ADMINISTRATION","الإدارة"]].map(([v,l])=><Pressable key={v} onPress={()=>setModuleBranch(v)} style={[s.chip,moduleBranch===v&&s.chipActive]}><Text style={[s.chipText,moduleBranch===v&&s.white]}>{l}</Text></Pressable>)}</View><Text style={s.label}>الأولوية</Text><View style={s.chips}>{[["LOW","منخفضة"],["NORMAL","عادية"],["HIGH","عالية"],["URGENT","عاجلة"]].map(([v,l])=><Pressable key={v} onPress={()=>setModulePriority(v)} style={[s.chip,modulePriority===v&&s.chipActive]}><Text style={[s.chipText,modulePriority===v&&s.white]}>{l}</Text></Pressable>)}</View><Field label="التاريخ المطلوب" value={moduleRequiredDate} onChangeText={setModuleRequiredDate} placeholder="YYYY-MM-DD"/></>}
           <Btn title={activeModule==="grievances"?(grievanceEntryChoice==="APPEAL"?"إرسال التظلم":"إرسال الشكوى"):"إرسال الطلب"} disabled={busy|| (activeModule==="grievances"&&!grievanceEntryChoice)} onPress={saveModuleRecord}/><Btn title="إلغاء" secondary onPress={resetModuleForm}/>
@@ -1133,7 +1256,7 @@ export default function App() {
         {moduleSelected&&<View style={s.card}><Text style={s.title}>تفاصيل السجل</Text>
           {activeModule==="services"&&<><View style={s.metrics}><Metric title="رقم الطلب" value={String(pick(moduleSelected,["request_number"],"—"))}/><Metric title="الحالة" value={String(pick(moduleSelected,["status"],"—"))}/></View><View style={s.metrics}><Metric title="المرحلة" value={String(pick(moduleSelected,["current_stage"],"—"))}/><Metric title="المسؤول" value={String(pick(moduleSelected,["current_assignee","manager_employee_number","services_approver_employee_number"],"—"))}/></View><Text style={s.sectionTitle}>مسار الموافقات</Text><Text style={s.body}>المدير المباشر ← الخدمات الإدارية ← المراجعة</Text></>}
           {activeModule!=="services"&&Object.entries(moduleSelected).map(([k,v])=><View key={k} style={s.answerLine}><Text style={s.answerText}>{k}: {String(v??"—")}</Text></View>)}
-          {activeModule==="assets"&&<><Text style={s.sectionTitle}>العهدة والإجراءات</Text>{moduleRelatedRows.map((a:any)=><View key={String(a.id)} style={s.responseCard}><Text style={s.responseTitle}>الموظف: {String(pick(a,["employee_id"],"—"))}</Text><Text style={s.smallMuted}>الحالة: {String(pick(a,["assignment_status"],"—"))} | الاستلام: {String(pick(a,["assigned_at"],"—"))}</Text><Text style={s.smallMuted}>الإرجاع: {String(pick(a,["returned_at"],"لم يرجع بعد"))}</Text></View>)}<Field label="رقم الموظف" value={moduleEmployeeNo} onChangeText={setModuleEmployeeNo} keyboardType="numeric" placeholder="رقم الموظف"/><Field label="ملاحظات / سبب الإجراء" value={moduleNotes} onChangeText={setModuleNotes} placeholder="التفاصيل"/><Text style={s.label}>حالة الأصل عند الإرجاع</Text><View style={s.chips}>{[["new","جديد"],["excellent","ممتاز"],["good","جيد"],["fair","مقبول"],["poor","ضعيف"],["damaged","تالف"]].map(([v,l])=><Pressable key={v} onPress={()=>setModuleCondition(v)} style={[s.chip,moduleCondition===v&&s.chipActive]}><Text style={[s.chipText,moduleCondition===v&&s.white]}>{l}</Text></Pressable>)}</View><View style={s.chips}><Btn title="استلام / تسليم" onPress={()=>runModuleAction("assign")}/><Btn title="إرجاع" secondary onPress={()=>runModuleAction("return")}/><Btn title="نقل" secondary onPress={()=>runModuleAction("move")}/><Btn title="صيانة" secondary onPress={()=>runModuleAction("maintenance")}/><Btn title="فحص" secondary onPress={()=>runModuleAction("inspection")}/></View></>}
+          {activeModule==="assets"&&<><Text style={s.sectionTitle}>العهدة والإجراءات</Text>{moduleRelatedRows.map((a:any)=><View key={String(a.id)} style={s.responseCard}><Text style={s.responseTitle}>الموظف: {String(pick(a,["employee_id"],"—"))}</Text><Text style={s.smallMuted}>الحالة: {String(pick(a,["assignment_status"],"—"))} | الاستلام: {String(pick(a,["assigned_at"],"—"))}</Text><Text style={s.smallMuted}>الإرجاع: {String(pick(a,["returned_at"],"لم يرجع بعد"))}</Text></View>)}{(systemAdmin||permissions.ASSETS_ASSIGN||permissions.ASSETS_UPDATE||permissions.ASSETS_MAINTAIN||permissions.ASSETS_MOVE||permissions.ASSETS_DISPOSE)&&<><Field label="رقم الموظف" value={moduleEmployeeNo} onChangeText={setModuleEmployeeNo} keyboardType="numeric" placeholder="رقم الموظف"/><Field label="ملاحظات / سبب الإجراء" value={moduleNotes} onChangeText={setModuleNotes} placeholder="التفاصيل"/><Text style={s.label}>حالة الأصل عند الإرجاع</Text><View style={s.chips}>{[["new","جديد"],["excellent","ممتاز"],["good","جيد"],["fair","مقبول"],["poor","ضعيف"],["damaged","تالف"]].map(([v,l])=><Pressable key={v} onPress={()=>setModuleCondition(v)} style={[s.chip,moduleCondition===v&&s.chipActive]}><Text style={[s.chipText,moduleCondition===v&&s.white]}>{l}</Text></Pressable>)}</View><View style={s.chips}>{(systemAdmin||permissions.ASSETS_ASSIGN)&&<Btn title="استلام / تسليم" onPress={()=>runModuleAction("assign")}/>}{(systemAdmin||permissions.ASSETS_ASSIGN)&&<Btn title="إرجاع" secondary onPress={()=>runModuleAction("return")}/>}{(systemAdmin||permissions.ASSETS_MOVE)&&<Btn title="نقل" secondary onPress={()=>runModuleAction("move")}/>}{(systemAdmin||permissions.ASSETS_MAINTAIN)&&<Btn title="صيانة" secondary onPress={()=>runModuleAction("maintenance")}/>}{(systemAdmin||permissions.ASSETS_UPDATE)&&<Btn title="فحص" secondary onPress={()=>runModuleAction("inspection")}/>}</View></>}</>}
           {activeModule==="grievances"&&<><Text style={s.sectionTitle}>التحقيقات المرتبطة</Text><Field label="نطاق التحقيق / ملاحظات" value={moduleNotes} onChangeText={setModuleNotes} placeholder="تفاصيل نطاق التحقيق"/><Btn title="إنشاء تحقيق" onPress={()=>runModuleAction("new_investigation")}/>{moduleRelatedRows.map((inv:any)=><View key={String(inv.id)} style={s.responseCard}><Text style={s.responseTitle}>{inv.investigation_number||"تحقيق"} — {inv.investigation_status}</Text><Text style={s.answerText}>{inv.investigation_title||""}</Text></View>)}<Field label="نتائج التحقيق" value={investigationFindings} onChangeText={setInvestigationFindings} placeholder="النتائج" multiline/><Field label="التوصيات" value={investigationRecommendations} onChangeText={setInvestigationRecommendations} placeholder="التوصيات" multiline/><Field label="الخلاصة" value={investigationConclusion} onChangeText={setInvestigationConclusion} placeholder="الخلاصة" multiline/><Btn title="بدء التحقيق" secondary onPress={()=>runModuleAction("start_investigation")}/><Btn title="إكمال التحقيق" secondary onPress={()=>runModuleAction("complete_investigation")}/></>}
           {activeModule==="suggestions"&&<><Text style={s.sectionTitle}>التقييم والقرار والتنفيذ</Text><Text style={s.body}>الحالة الحالية: {String(pick(moduleSelected,["status"],"—"))}</Text><Text style={s.body}>التقييم: {String(pick(moduleSelected,["evaluation","evaluation_score","evaluation_result"],"لم يتم التقييم بعد"))}</Text><Text style={s.body}>القرار: {String(pick(moduleSelected,["management_decision","decision"],"لم يصدر بعد"))}</Text><Text style={s.body}>التنفيذ: {String(pick(moduleSelected,["implementation_status","implementation_notes"],"غير محدد"))}</Text><Field label="قرار / ملاحظات" value={moduleNotes} onChangeText={setModuleNotes} placeholder="ملاحظات الإدارة"/><View style={s.chips}>{[["UNDER_REVIEW","قيد المراجعة"],["APPROVED","معتمد"],["REJECTED","مرفوض"],["REFERRED","محال"],["IN_PROGRESS","قيد التنفيذ"],["IMPLEMENTED","منفذ"],["CLOSED","مغلق"]].map(([v,l])=><Pressable key={v} onPress={()=>runModuleAction(v)} style={s.chip}><Text style={s.chipText}>{l}</Text></Pressable>)}</View></>}
           {activeModule==="services"&&<><Text style={s.sectionTitle}>إجراءات الموافقة والتنفيذ</Text><Field label="ملاحظات الإجراء" value={moduleNotes} onChangeText={setModuleNotes} placeholder="ملاحظات" multiline/><View style={s.chips}><Btn title="اعتماد" onPress={()=>runModuleAction("approve")}/><Btn title="إرجاع" secondary onPress={()=>runModuleAction("return")}/><Btn title="رفض" secondary onPress={()=>runModuleAction("reject")}/><Btn title="بدء التنفيذ" secondary onPress={()=>runModuleAction("start")}/><Btn title="إكمال" secondary onPress={()=>runModuleAction("complete")}/><Btn title="إغلاق" secondary onPress={()=>runModuleAction("close")}/></View></>}
@@ -1142,48 +1265,42 @@ export default function App() {
       <Btn title="العودة إلى خدمات النظام" secondary onPress={()=>{setScreen("dashboard");setModuleSelected(null);}}/>
     </ScrollView>}
 
+    {screen==="assetRequest" && <ScrollView contentContainerStyle={[s.container,{paddingBottom:105}]}>
+      <View style={s.hero}><Text style={s.heroTitle}>طلب عهدة</Text><Text style={s.heroSub}>طلب جهاز أو أصل من أصول الشركة لاستخدامه في العمل.</Text></View>
+      <View style={s.card}>
+        <Text style={s.body}>مقدم الطلب: {employee?.employee_name||"—"} | الرقم الوظيفي: {employee?.employee_number||"—"}</Text>
+        <Field label="الجهاز أو الأصل المطلوب" value={assetRequestName} onChangeText={setAssetRequestName} placeholder="مثال: حاسوب محمول، هاتف، طابعة، أثاث..." />
+        <Field label="سبب الاحتياج" value={assetRequestReason} onChangeText={setAssetRequestReason} placeholder="وضح طبيعة العمل والحاجة إلى الأصل" multiline />
+        <Field label="المواصفات أو ملاحظات إضافية (اختياري)" value={assetRequestSpecs} onChangeText={setAssetRequestSpecs} placeholder="المواصفات المطلوبة إن وجدت" multiline />
+        <Text style={s.sub}>مسار الطلب: المدير المباشر ← الخدمات الإدارية ← المراجعة.</Text>
+        <Btn title="إرسال طلب العهدة" disabled={busy} onPress={submitAssetRequest}/>
+        <Btn title="رجوع" secondary onPress={()=>setScreen("dashboard")}/>
+      </View>
+    </ScrollView>}
+
     {screen==="employeeRequests" && <ScrollView contentContainerStyle={[s.container,{paddingBottom:105}]}>
       <View style={s.hero}>
         <Text style={s.heroTitle}>طلبات الموظفين</Text>
         <Text style={s.heroSub}>الطلبات المحالة إلى حسابك حسب مرحلة الاعتماد.</Text>
       </View>
+      <View style={s.card}><Field label="ملاحظات القرار / سبب الرفض" value={moduleNotes} onChangeText={setModuleNotes} placeholder="أدخل الملاحظات، وهي إلزامية عند الرفض" multiline/></View>
 
       {employeeRequests.is_manager && (
         <View style={s.card}>
           <Text style={s.title}>المدير المباشر</Text>
-          <Text style={s.sub}>طلبات الشكاوى والمقترحات المحالة إليك.</Text>
+          <Text style={s.sub}>طلبات العهد والشكاوى والتظلمات والتصاريح المحالة إليك.</Text>
+          
           {employeeRequests.manager.map((r:any) => (
             <View key={String(r.id)} style={s.responseCard}>
               <Text style={s.responseTitle}>{r.title || r.case_number || "طلب موظف"}</Text>
               <Text style={s.smallMuted}>
-                {r.case_type === "GRIEVANCE" ? "شكوى" : "مقترح"} | الموظف: {r.requester_employee_name || r.requester_employee_number} | الحالة: {r.status}
+                {requestTypeLabel(r)} | الموظف: {r.requester_employee_name || r.requester_employee_number} | الحالة: {r.status}
               </Text>
-              <Text style={s.answerText}>{r.case_number || ""}</Text>
+              <Text style={s.answerText}>{r.case_number || ""}{r.reason?`\nسبب الطلب: ${r.reason}`:""}{r.description?`\nالتفاصيل: ${r.description}`:""}{r.specifications?`\nالمواصفات: ${r.specifications}`:""}</Text>
               <View style={s.chips}>
-                <Btn
-                  title="تمت المراجعة"
-                  onPress={async () => {
-                    setBusy(true);
-                    try {
-                      const q = await supabase.rpc("update_employee_workflow_task", {
-                        p_task_id: r.id,
-                        p_status: "COMPLETED",
-                        p_action_note: "تمت مراجعة الطلب من المدير المباشر"
-                      });
-                      if (q.error) throw q.error;
-                      await loadEmployeeRequests();
-                    } catch (e:any) {
-                      Alert.alert("تعذر التحديث", errText(e));
-                    } finally {
-                      setBusy(false);
-                    }
-                  }}
-                />
-                <Btn
-                  title="فتح الوحدة"
-                  secondary
-                  onPress={() => openModule(r.case_type === "GRIEVANCE" ? "grievances" : "suggestions")}
-                />
+                <Btn title="قبول وتحويل" disabled={busy} onPress={()=>decideRequestAtStage(r,"APPROVED")}/>
+                <Btn title="رفض" secondary disabled={busy} onPress={()=>decideRequestAtStage(r,"REJECTED")}/>
+                <Btn title="معاينة / طباعة PDF" secondary onPress={()=>printEmployeeRequest(r,"المدير المباشر")}/>
               </View>
             </View>
           ))}
@@ -1204,7 +1321,11 @@ export default function App() {
                 {r.request_number || ""} | المرحلة: {r.current_stage || "—"} | الحالة: {r.status || "—"}
               </Text>
               <Text style={s.answerText}>{r.description || ""}</Text>
-              <Btn title="فتح الطلب" secondary onPress={() => openModule("services")} />
+              <View style={s.chips}>
+                <Btn title="قبول / اعتماد" disabled={busy} onPress={()=>decideRequestAtStage(r,"APPROVED")}/>
+                <Btn title="رفض" secondary disabled={busy} onPress={()=>decideRequestAtStage(r,"REJECTED")}/>
+                <Btn title="معاينة / طباعة PDF" secondary onPress={()=>printEmployeeRequest(r,"الخدمات الإدارية")}/>
+              </View>
             </View>
           ))}
           {!employeeRequests.services.length && (
@@ -1224,7 +1345,11 @@ export default function App() {
                 {r.request_number || ""} | المرحلة: {r.current_stage || "—"} | الحالة: {r.status || "—"}
               </Text>
               <Text style={s.answerText}>{r.description || ""}</Text>
-              <Btn title="فتح الطلب" secondary onPress={() => openModule("services")} />
+              <View style={s.chips}>
+                <Btn title="اعتماد" disabled={busy} onPress={()=>decideRequestAtStage(r,"APPROVED")}/>
+                <Btn title="رفض" secondary disabled={busy} onPress={()=>decideRequestAtStage(r,"REJECTED")}/>
+                <Btn title="معاينة / طباعة PDF" secondary onPress={()=>printEmployeeRequest(r,"المراجعة")}/>
+              </View>
             </View>
           ))}
           {!employeeRequests.review.length && (
@@ -1327,5 +1452,8 @@ function AverageBar({title,value}:{title:string;value:number}){const v=Math.max(
 
 const s=StyleSheet.create({
  safe:{flex:1,backgroundColor:"#F7F7F7"},container:{padding:0,paddingBottom:40},hero:{backgroundColor:"#ECECEC",borderRadius:0,padding:20,marginBottom:14,borderBottomWidth:1,borderBottomColor:"#E0E0E0"},heroTitle:{color:C.text,fontSize:23,fontWeight:"900",textAlign:"right"},heroSub:{color:C.primary,fontSize:13,textAlign:"right",marginTop:7,lineHeight:21,fontWeight:"700"},
- card:{backgroundColor:"#fff",borderRadius:20,padding:18,marginBottom:14,borderWidth:0,shadowColor:"#000",shadowOpacity:.08,shadowRadius:10,shadowOffset:{width:0,height:3},elevation:3},grievanceSplit:{flexDirection:"row-reverse",gap:12,alignItems:"stretch"},grievancePanel:{flex:1,minHeight:210,borderWidth:1,borderColor:C.border,borderRadius:14,padding:14,backgroundColor:C.bg,alignItems:"flex-end",justifyContent:"flex-start"},grievancePanelTitle:{fontSize:17,fontWeight:"900",color:C.dark,textAlign:"right",marginTop:9},grievancePanelText:{fontSize:11,color:C.muted,textAlign:"right",lineHeight:19,marginTop:6,marginBottom:8},grievanceChoiceRow:{flexDirection:"row-reverse",gap:10},grievanceChoice:{flex:1,minHeight:150,borderWidth:1,borderColor:C.border,borderRadius:14,padding:14,backgroundColor:C.bg,alignItems:"flex-end"},grievanceChoiceTitle:{fontSize:15,fontWeight:"900",color:C.dark,textAlign:"right",marginTop:8},screenTopBar:{height:58,flexDirection:"row-reverse",alignItems:"center",justifyContent:"space-between",backgroundColor:"#fff",borderBottomWidth:1,borderBottomColor:"#E6E8EB",marginBottom:0,paddingHorizontal:12},backCircle:{width:42,height:42,alignItems:"center",justifyContent:"center"},screenTopTitle:{flex:1,fontSize:24,fontWeight:"900",color:C.text,textAlign:"center"},moduleTabs:{height:58,backgroundColor:"#fff",flexDirection:"row-reverse",borderBottomWidth:1,borderBottomColor:"#E4E6E9",marginBottom:14},moduleTab:{flex:1,alignItems:"center",justifyContent:"center",borderBottomWidth:3,borderBottomColor:"transparent"},moduleTabActive:{borderBottomColor:C.primary},moduleTabText:{fontSize:15,fontWeight:"800",color:C.text},moduleTabTextActive:{color:C.primary},grievanceDashboard:{flexDirection:"row-reverse",gap:12,marginBottom:15},grievanceMainCard:{flex:1,minHeight:225,backgroundColor:"#fff",borderRadius:18,padding:15,borderWidth:1,borderColor:"#E5E7EA",alignItems:"flex-end",justifyContent:"flex-start"},grievanceReportCard:{backgroundColor:"#F8F8F8"},grievanceMainIcon:{width:58,height:58,borderRadius:29,backgroundColor:"#F0F1F3",alignItems:"center",justifyContent:"center",marginBottom:11},grievanceMainTitle:{fontSize:18,fontWeight:"900",color:C.text,textAlign:"right"},grievanceMainText:{fontSize:11,color:C.muted,textAlign:"right",lineHeight:19,marginTop:6,marginBottom:12},grievanceAction:{marginTop:"auto",width:"100%",minHeight:42,borderRadius:10,backgroundColor:C.primary,flexDirection:"row-reverse",alignItems:"center",justifyContent:"center",gap:5},grievanceActionText:{color:"#fff",fontSize:12,fontWeight:"900"},reportCount:{marginTop:"auto",width:"100%",paddingTop:10,borderTopWidth:1,borderTopColor:"#E1E4E7",flexDirection:"row-reverse",alignItems:"center",gap:8},reportCountNumber:{fontSize:24,fontWeight:"900",color:C.primary},reportCountLabel:{fontSize:12,color:C.muted,fontWeight:"700"},sectionHeaderRow:{flexDirection:"row-reverse",alignItems:"center",gap:10},sectionHeaderLine:{flex:1,height:1,backgroundColor:"#E5E7EA"},grievanceReportItem:{backgroundColor:"#F8F8F8",borderRadius:16,padding:15,marginTop:11,borderWidth:1,borderColor:"#E4E6E9"},grievanceReportItemActive:{borderColor:C.primary,backgroundColor:C.pale},reportTopRow:{flexDirection:"row-reverse",alignItems:"flex-start",gap:10},reportTitleBlock:{flex:1},reportItemTitle:{fontSize:16,fontWeight:"900",color:C.text,textAlign:"right"},statusPill:{paddingHorizontal:12,paddingVertical:7,borderRadius:20},statusPillText:{fontSize:11,fontWeight:"900"},routeBox:{marginTop:12,padding:11,borderRadius:11,backgroundColor:"#fff",borderWidth:1,borderColor:"#ECEDEF"},routeLabel:{fontSize:11,fontWeight:"900",color:C.dark,textAlign:"right",marginBottom:4},routeText:{fontSize:11,color:C.muted,textAlign:"right",lineHeight:20},reportBottomRow:{marginTop:10,flexDirection:"row-reverse",alignItems:"center",justifyContent:"space-between"},emptyPanel:{alignItems:"center",paddingVertical:24},formHeading:{flexDirection:"row-reverse",alignItems:"center",gap:12,marginBottom:8},formHeadingIcon:{width:52,height:52,borderRadius:26,backgroundColor:"#F0F1F3",alignItems:"center",justifyContent:"center"},choiceLargeRow:{flexDirection:"row-reverse",gap:12,marginTop:8},choiceLarge:{flex:1,minHeight:175,borderWidth:1,borderColor:"#D9DDE2",borderRadius:16,padding:14,backgroundColor:"#F8F8F8",alignItems:"flex-end"},choiceIcon:{width:50,height:50,borderRadius:25,backgroundColor:"#fff",alignItems:"center",justifyContent:"center",marginBottom:10},choiceLargeTitle:{fontSize:16,fontWeight:"900",color:C.text,textAlign:"right"},choiceLargeText:{fontSize:11,color:C.muted,textAlign:"right",lineHeight:18,marginTop:5},selectedTypeBanner:{flexDirection:"row-reverse",alignItems:"center",gap:8,backgroundColor:C.pale,borderWidth:1,borderColor:"#F0D7D8",borderRadius:12,padding:11,marginBottom:12},selectedTypeText:{flex:1,fontSize:13,fontWeight:"900",color:C.dark,textAlign:"right"},changeType:{fontSize:11,fontWeight:"900",color:C.primary},mainGrid:{flexDirection:"column",marginTop:10},mainSectionCard:{width:"100%",minHeight:94,backgroundColor:"#EDEDED",borderWidth:0,borderRadius:20,padding:14,marginBottom:12,flexDirection:"row-reverse",alignItems:"center",gap:12},mainSectionIcon:{width:58,height:58,borderRadius:29,backgroundColor:"#E1E1E1",alignItems:"center",justifyContent:"center",position:"relative"},badge:{position:"absolute",top:-5,right:-5,minWidth:22,height:22,paddingHorizontal:5,borderRadius:11,backgroundColor:C.primary,alignItems:"center",justifyContent:"center",borderWidth:2,borderColor:"#fff"},badgeText:{color:"#fff",fontSize:10,fontWeight:"900"},mainSectionContent:{flex:1},mainSectionTitle:{fontSize:17,fontWeight:"900",color:C.text,textAlign:"right"},mainSectionText:{fontSize:10,color:C.muted,textAlign:"right",lineHeight:17,marginTop:4},mainSectionArrow:{width:38,height:38,borderRadius:19,borderWidth:1,borderColor:C.primary,alignItems:"center",justifyContent:"center",backgroundColor:"#fff"},roleTabs:{flexDirection:"row-reverse",backgroundColor:"#fff",borderRadius:0,padding:0,marginBottom:15,borderBottomWidth:1,borderBottomColor:"#D9D9D9"},roleTab:{flex:1,paddingVertical:13,borderRadius:0,alignItems:"center",borderBottomWidth:3,borderBottomColor:"transparent"},roleTabActive:{backgroundColor:"#fff",borderBottomColor:C.primary},roleTabText:{fontSize:15,color:C.text,fontWeight:"800"},roleTabTextActive:{color:C.primary,fontWeight:"900"},managerHint:{backgroundColor:C.pale,borderRadius:12,padding:13,marginTop:10},title:{fontSize:21,fontWeight:"800",color:C.text,textAlign:"right"},sub:{fontSize:12,color:C.muted,textAlign:"right",marginTop:5,marginBottom:12,lineHeight:20},body:{fontSize:15,color:C.text,textAlign:"right",lineHeight:25,marginVertical:12},field:{marginBottom:14},label:{fontSize:14,fontWeight:"800",color:C.text,textAlign:"right",marginBottom:7},input:{borderWidth:1.5,borderColor:"#8E8E8E",borderRadius:14,backgroundColor:"#F4F4F4",paddingHorizontal:15,paddingVertical:13,fontSize:15,color:C.text,minHeight:55},readonly:{marginBottom:13,alignItems:"flex-end"},readonlyText:{fontSize:15,color:C.dark,fontWeight:"700"},chips:{flexDirection:"row",flexWrap:"wrap",justifyContent:"flex-end",gap:7},chip:{borderWidth:1,borderColor:C.border,borderRadius:9,padding:9,backgroundColor:"#fff"},chipActive:{backgroundColor:C.primary,borderColor:C.primary},chipText:{fontSize:12,color:C.text},white:{color:"#fff"},btn:{backgroundColor:C.primary,borderRadius:14,paddingVertical:14,alignItems:"center",marginTop:9,shadowColor:C.primary,shadowOpacity:.15,shadowRadius:6,elevation:2},btnText:{color:"#fff",fontWeight:"900",fontSize:15},btn2:{backgroundColor:"#fff",borderWidth:1.5,borderColor:C.primary},btnText2:{color:C.primary},moduleHead:{flexDirection:"row",alignItems:"center",gap:10,marginBottom:10},moduleIcon:{width:52,height:52,borderRadius:26,backgroundColor:"#E7E7E7",alignItems:"center",justifyContent:"center"},surveyCard:{borderWidth:0,backgroundColor:"#EDEDED",borderRadius:18,padding:16,marginTop:12,shadowColor:"#000",shadowOpacity:.06,shadowRadius:7,elevation:2},surveyTitle:{fontSize:16,fontWeight:"800",color:C.dark,textAlign:"right"},status:{fontSize:12,color:C.muted,textAlign:"right"},progress:{height:8,backgroundColor:"#E4E8ED",borderRadius:8,overflow:"hidden",marginTop:8},fill:{height:"100%",backgroundColor:C.primary},domain:{fontSize:17,fontWeight:"800",color:C.dark,textAlign:"right",marginVertical:10},qcard:{backgroundColor:"#fff",borderRadius:18,padding:16,marginBottom:12,borderWidth:0,shadowColor:"#000",shadowOpacity:.06,shadowRadius:7,elevation:2},qno:{fontSize:12,fontWeight:"800",color:C.primary,textAlign:"right",marginBottom:6},question:{fontSize:14,fontWeight:"700",color:C.text,textAlign:"right",lineHeight:23,marginBottom:11},scale:{flexDirection:"row",flexWrap:"wrap",justifyContent:"flex-end",gap:6},scaleItem:{width:57,minHeight:60,borderWidth:1,borderColor:C.border,borderRadius:8,padding:5,alignItems:"center",justifyContent:"center"},active:{backgroundColor:C.primary,borderColor:C.primary},val:{fontSize:16,fontWeight:"800",color:C.dark},lbl:{fontSize:9,color:C.muted,textAlign:"center",marginTop:3},done:{alignSelf:"center",width:62,height:62,borderRadius:31,backgroundColor:"#E8F6EE",color:C.success,fontSize:42,fontWeight:"800",textAlign:"center",lineHeight:60,marginBottom:12},score:{flexDirection:"row-reverse",justifyContent:"space-between",padding:12,borderBottomWidth:1,borderBottomColor:"#EDF0F3"},scoreTitle:{color:C.text,fontSize:13},scoreVal:{fontWeight:"800",color:C.dark},total:{backgroundColor:C.pale,borderBottomWidth:0,marginTop:5,borderRadius:8},sectionTitle:{fontSize:16,fontWeight:"800",color:C.dark,textAlign:"right",marginTop:20,marginBottom:10},barWrap:{marginBottom:12},barHead:{flexDirection:"row-reverse",justifyContent:"space-between",marginBottom:5},barTitle:{fontSize:12,color:C.text,fontWeight:"700"},barValue:{fontSize:12,color:C.dark,fontWeight:"800"},barTrack:{height:10,backgroundColor:"#E8EBEF",borderRadius:8,overflow:"hidden"},barFill:{height:"100%",backgroundColor:C.primary,borderRadius:8},metrics:{flexDirection:"row",gap:10},metric:{flex:1,backgroundColor:C.pale,padding:13,borderRadius:10,alignItems:"center",marginBottom:10},metricValue:{fontSize:21,fontWeight:"800",color:C.dark},metricTitle:{fontSize:11,color:C.muted,marginTop:5},toggle:{flexDirection:"row-reverse",justifyContent:"space-between",alignItems:"center",padding:12,backgroundColor:C.bg,borderRadius:9},toggleValue:{fontWeight:"800",color:C.dark},exportRow:{flexDirection:"row-reverse",gap:8,marginBottom:12},exportBtn:{flex:1,padding:12,backgroundColor:C.pale,borderRadius:9,alignItems:"center"},exportText:{fontSize:12,fontWeight:"800",color:C.dark},responseCard:{borderWidth:0,backgroundColor:"#EDEDED",borderRadius:17,padding:14,marginTop:10,shadowColor:"#000",shadowOpacity:.05,shadowRadius:6,elevation:2},responseTitle:{fontWeight:"800",color:C.dark,textAlign:"right"},smallMuted:{fontSize:10,color:C.muted,textAlign:"right"},answerList:{borderTopWidth:1,borderTopColor:C.border,marginTop:10,paddingTop:7},answerLine:{paddingVertical:7,borderBottomWidth:1,borderBottomColor:"#F0F1F3"},answerText:{fontSize:12,color:C.text,textAlign:"right",lineHeight:19},answerValue:{fontSize:12,color:C.dark,fontWeight:"800",textAlign:"left",marginTop:3},empty:{textAlign:"center",color:C.muted,padding:15},selectedPanel:{marginTop:14,padding:12,borderRadius:10,backgroundColor:C.bg},dropdownButton:{minHeight:54,borderWidth:1.5,borderColor:"#8E8E8E",borderRadius:14,backgroundColor:"#F4F4F4",padding:14,flexDirection:"row-reverse",alignItems:"center",justifyContent:"space-between",marginBottom:9},dropdownButtonText:{fontSize:13,color:C.text,textAlign:"right",flex:1},dropdownArrow:{color:C.dark,fontWeight:"800",marginLeft:8},dropdownPanel:{borderWidth:1,borderColor:C.border,borderRadius:10,padding:9,backgroundColor:"#FAFBFC",marginBottom:10},dropdownList:{maxHeight:230,marginTop:6},dropdownOption:{paddingVertical:11,paddingHorizontal:8,borderBottomWidth:1,borderBottomColor:"#E9EDF1"},dropdownOptionActive:{backgroundColor:C.pale},dropdownOptionText:{fontSize:13,color:C.text,textAlign:"right"},bulkActions:{marginTop:12,marginBottom:8},bulkActionButtons:{flexDirection:"row-reverse",flexWrap:"wrap",gap:7,marginTop:8},smallAction:{borderWidth:1,borderColor:C.border,borderRadius:8,paddingVertical:7,paddingHorizontal:9,backgroundColor:"#fff"},smallActionText:{fontSize:11,color:C.dark,fontWeight:"700"},bulkEmployeeList:{maxHeight:300,borderWidth:1,borderColor:C.border,borderRadius:10,paddingHorizontal:8,marginTop:5},bulkEmployeeRow:{flexDirection:"row-reverse",alignItems:"center",gap:10,paddingVertical:10,borderBottomWidth:1,borderBottomColor:"#EDF0F3"},checkboxBox:{width:23,height:23,borderRadius:5,borderWidth:1,borderColor:C.border,alignItems:"center",justifyContent:"center",backgroundColor:"#fff"},checkboxBoxActive:{backgroundColor:C.primary,borderColor:C.primary},checkboxMark:{color:"#fff",fontWeight:"900"},loading:{position:"absolute",top:8,right:8,backgroundColor:"#fff",padding:7,borderRadius:20},bottomNav:{position:"absolute",left:0,right:0,bottom:0,height:78,backgroundColor:"#fff",borderTopWidth:1,borderTopColor:"#D8D8D8",flexDirection:"row-reverse",justifyContent:"space-around",alignItems:"center",paddingBottom:7,shadowOpacity:.08,shadowRadius:8,elevation:10},navItem:{flex:1,alignItems:"center",justifyContent:"center"},navIcon:{width:42,height:42,borderRadius:21,alignItems:"center",justifyContent:"center",backgroundColor:"#E8E8E8"},navIconActive:{backgroundColor:C.primary},navLabel:{fontSize:10,color:"#9A9A9A",fontWeight:"700",marginTop:3},navLabelActive:{color:C.primary,fontWeight:"900"},noticeRow:{flexDirection:"row-reverse",alignItems:"center",gap:12},noticeIcon:{width:50,height:50,borderRadius:25,backgroundColor:"#F1F3F5",alignItems:"center",justifyContent:"center"},profileHead:{flexDirection:"row-reverse",alignItems:"center",gap:12,marginBottom:10},profileIcon:{width:58,height:58,borderRadius:29,backgroundColor:"#F1F3F5",alignItems:"center",justifyContent:"center"}
+ card:{backgroundColor:"#fff",borderRadius:20,padding:18,marginBottom:14,borderWidth:0,shadowColor:"#000",shadowOpacity:.08,shadowRadius:10,shadowOffset:{width:0,height:3},elevation:3},grievanceSplit:{flexDirection:"row-reverse",gap:12,alignItems:"stretch"},grievancePanel:{flex:1,minHeight:210,borderWidth:1,borderColor:C.border,borderRadius:14,padding:14,backgroundColor:C.bg,alignItems:"flex-end",justifyContent:"flex-start"},grievancePanelTitle:{fontSize:17,fontWeight:"900",color:C.dark,textAlign:"right",marginTop:9},grievancePanelText:{fontSize:11,color:C.muted,textAlign:"right",lineHeight:19,marginTop:6,marginBottom:8},grievanceChoiceRow:{flexDirection:"row-reverse",gap:10},grievanceChoice:{flex:1,minHeight:150,borderWidth:1,borderColor:C.border,borderRadius:14,padding:14,backgroundColor:C.bg,alignItems:"flex-end"},grievanceChoiceTitle:{fontSize:15,fontWeight:"900",color:C.dark,textAlign:"right",marginTop:8},screenTopBar:{height:58,flexDirection:"row-reverse",alignItems:"center",justifyContent:"space-between",backgroundColor:"#fff",borderBottomWidth:1,borderBottomColor:"#E6E8EB",marginBottom:0,paddingHorizontal:12},backCircle:{width:42,height:42,alignItems:"center",justifyContent:"center"},screenTopTitle:{flex:1,fontSize:24,fontWeight:"900",color:C.text,textAlign:"center"},moduleTabs:{height:58,backgroundColor:"#fff",flexDirection:"row-reverse",borderBottomWidth:1,borderBottomColor:"#E4E6E9",marginBottom:14},moduleTab:{flex:1,alignItems:"center",justifyContent:"center",borderBottomWidth:3,borderBottomColor:"transparent"},moduleTabActive:{borderBottomColor:C.primary},moduleTabText:{fontSize:15,fontWeight:"800",color:C.text},moduleTabTextActive:{color:C.primary},grievanceDashboard:{flexDirection:"row-reverse",gap:12,marginBottom:15},grievanceMainCard:{flex:1,minHeight:225,backgroundColor:"#fff",borderRadius:18,padding:15,borderWidth:1,borderColor:"#E5E7EA",alignItems:"flex-end",justifyContent:"flex-start"},grievanceReportCard:{backgroundColor:"#F8F8F8"},grievanceMainIcon:{width:58,height:58,borderRadius:29,backgroundColor:"#F0F1F3",alignItems:"center",justifyContent:"center",marginBottom:11},grievanceMainTitle:{fontSize:18,fontWeight:"900",color:C.text,textAlign:"right"},grievanceMainText:{fontSize:11,color:C.muted,textAlign:"right",lineHeight:19,marginTop:6,marginBottom:12},grievanceAction:{marginTop:"auto",width:"100%",minHeight:42,borderRadius:10,backgroundColor:C.primary,flexDirection:"row-reverse",alignItems:"center",justifyContent:"center",gap:5},grievanceActionText:{color:"#fff",fontSize:12,fontWeight:"900"},reportCount:{marginTop:"auto",width:"100%",paddingTop:10,borderTopWidth:1,borderTopColor:"#E1E4E7",flexDirection:"row-reverse",alignItems:"center",gap:8},reportCountNumber:{fontSize:24,fontWeight:"900",color:C.primary},reportCountLabel:{fontSize:12,color:C.muted,fontWeight:"700"},sectionHeaderRow:{flexDirection:"row-reverse",alignItems:"center",gap:10},sectionHeaderLine:{flex:1,height:1,backgroundColor:"#E5E7EA"},grievanceReportItem:{backgroundColor:"#F8F8F8",borderRadius:16,padding:15,marginTop:11,borderWidth:1,borderColor:"#E4E6E9"},grievanceReportItemActive:{borderColor:C.primary,backgroundColor:C.pale},reportTopRow:{flexDirection:"row-reverse",alignItems:"flex-start",gap:10},reportTitleBlock:{flex:1},reportItemTitle:{fontSize:16,fontWeight:"900",color:C.text,textAlign:"right"},statusPill:{paddingHorizontal:12,paddingVertical:7,borderRadius:20},statusPillText:{fontSize:11,fontWeight:"900"},routeBox:{marginTop:12,padding:11,borderRadius:11,backgroundColor:"#fff",borderWidth:1,borderColor:"#ECEDEF"},routeLabel:{fontSize:11,fontWeight:"900",color:C.dark,textAlign:"right",marginBottom:4},routeText:{fontSize:11,color:C.muted,textAlign:"right",lineHeight:20},reportBottomRow:{marginTop:10,flexDirection:"row-reverse",alignItems:"center",justifyContent:"space-between"},emptyPanel:{alignItems:"center",paddingVertical:24},formHeading:{flexDirection:"row-reverse",alignItems:"center",gap:12,marginBottom:8},formHeadingIcon:{width:52,height:52,borderRadius:26,backgroundColor:"#F0F1F3",alignItems:"center",justifyContent:"center"},choiceLargeRow:{flexDirection:"row-reverse",gap:12,marginTop:8},choiceLarge:{flex:1,minHeight:175,borderWidth:1,borderColor:"#D9DDE2",borderRadius:16,padding:14,backgroundColor:"#F8F8F8",alignItems:"flex-end"},choiceIcon:{width:50,height:50,borderRadius:25,backgroundColor:"#fff",alignItems:"center",justifyContent:"center",marginBottom:10},choiceLargeTitle:{fontSize:16,fontWeight:"900",color:C.text,textAlign:"right"},choiceLargeText:{fontSize:11,color:C.muted,textAlign:"right",lineHeight:18,marginTop:5},selectedTypeBanner:{flexDirection:"row-reverse",alignItems:"center",gap:8,backgroundColor:C.pale,borderWidth:1,borderColor:"#F0D7D8",borderRadius:12,padding:11,marginBottom:12},selectedTypeText:{flex:1,fontSize:13,fontWeight:"900",color:C.dark,textAlign:"right"},changeType:{fontSize:11,fontWeight:"900",color:C.primary},mainGrid:{flexDirection:"column",marginTop:10},mainSectionCard:{width:"100%",minHeight:94,backgroundColor:"#EDEDED",borderWidth:0,borderRadius:20,padding:14,marginBottom:12,flexDirection:"row-reverse",alignItems:"center",gap:12},mainSectionIcon:{width:58,height:58,borderRadius:29,backgroundColor:"#E1E1E1",alignItems:"center",justifyContent:"center",position:"relative"},badge:{position:"absolute",top:-5,right:-5,minWidth:22,height:22,paddingHorizontal:5,borderRadius:11,backgroundColor:C.primary,alignItems:"center",justifyContent:"center",borderWidth:2,borderColor:"#fff"},badgeText:{color:"#fff",fontSize:10,fontWeight:"900"},mainSectionContent:{flex:1},mainSectionTitle:{fontSize:17,fontWeight:"900",color:C.text,textAlign:"right"},mainSectionText:{fontSize:10,color:C.muted,textAlign:"right",lineHeight:17,marginTop:4},mainSectionArrow:{width:38,height:38,borderRadius:19,borderWidth:1,borderColor:C.primary,alignItems:"center",justifyContent:"center",backgroundColor:"#fff"},roleTabs:{flexDirection:"row-reverse",backgroundColor:"#fff",borderRadius:0,padding:0,marginBottom:15,borderBottomWidth:1,borderBottomColor:"#D9D9D9"},roleTab:{flex:1,paddingVertical:13,borderRadius:0,alignItems:"center",borderBottomWidth:3,borderBottomColor:"transparent"},roleTabActive:{backgroundColor:"#fff",borderBottomColor:C.primary},roleTabText:{fontSize:15,color:C.text,fontWeight:"800"},roleTabTextActive:{color:C.primary,fontWeight:"900"},managerHint:{backgroundColor:C.pale,borderRadius:12,padding:13,marginTop:10},title:{fontSize:21,fontWeight:"800",color:C.text,textAlign:"right"},sub:{fontSize:12,color:C.muted,textAlign:"right",marginTop:5,marginBottom:12,lineHeight:20},body:{fontSize:15,color:C.text,textAlign:"right",lineHeight:25,marginVertical:12},field:{marginBottom:14},label:{fontSize:14,fontWeight:"800",color:C.text,textAlign:"right",marginBottom:7},input:{borderWidth:1.5,borderColor:"#8E8E8E",borderRadius:14,backgroundColor:"#F4F4F4",paddingHorizontal:15,paddingVertical:13,fontSize:15,color:C.text,minHeight:55},readonly:{marginBottom:13,alignItems:"flex-end"},readonlyText:{fontSize:15,color:C.dark,fontWeight:"700"},chips:{flexDirection:"row",flexWrap:"wrap",justifyContent:"flex-end",gap:7},chip:{borderWidth:1,borderColor:C.border,borderRadius:9,padding:9,backgroundColor:"#fff"},chipActive:{backgroundColor:C.primary,borderColor:C.primary},chipText:{fontSize:12,color:C.text},white:{color:"#fff"},btn:{backgroundColor:C.primary,borderRadius:14,paddingVertical:14,alignItems:"center",marginTop:9,shadowColor:C.primary,shadowOpacity:.15,shadowRadius:6,elevation:2},btnText:{color:"#fff",fontWeight:"900",fontSize:15},btn2:{backgroundColor:"#fff",borderWidth:1.5,borderColor:C.primary},btnText2:{color:C.primary},moduleHead:{flexDirection:"row",alignItems:"center",gap:10,marginBottom:10},moduleIcon:{width:52,height:52,borderRadius:26,backgroundColor:"#E7E7E7",alignItems:"center",justifyContent:"center"},surveyCard:{borderWidth:0,backgroundColor:"#EDEDED",borderRadius:18,padding:16,marginTop:12,shadowColor:"#000",shadowOpacity:.06,shadowRadius:7,elevation:2},surveyTitle:{fontSize:16,fontWeight:"800",color:C.dark,textAlign:"right"},status:{fontSize:12,color:C.muted,textAlign:"right"},progress:{height:8,backgroundColor:"#E4E8ED",borderRadius:8,overflow:"hidden",marginTop:8},fill:{height:"100%",backgroundColor:C.primary},domain:{fontSize:17,fontWeight:"800",color:C.dark,textAlign:"right",marginVertical:10},qcard:{backgroundColor:"#fff",borderRadius:18,padding:16,marginBottom:12,borderWidth:0,shadowColor:"#000",shadowOpacity:.06,shadowRadius:7,elevation:2},qno:{fontSize:12,fontWeight:"800",color:C.primary,textAlign:"right",marginBottom:6},question:{fontSize:14,fontWeight:"700",color:C.text,textAlign:"right",lineHeight:23,marginBottom:11},scale:{flexDirection:"row",flexWrap:"wrap",justifyContent:"flex-end",gap:6},scaleItem:{width:57,minHeight:60,borderWidth:1,borderColor:C.border,borderRadius:8,padding:5,alignItems:"center",justifyContent:"center"},active:{backgroundColor:C.primary,borderColor:C.primary},val:{fontSize:16,fontWeight:"800",color:C.dark},lbl:{fontSize:9,color:C.muted,textAlign:"center",marginTop:3},done:{alignSelf:"center",width:62,height:62,borderRadius:31,backgroundColor:"#E8F6EE",color:C.success,fontSize:42,fontWeight:"800",textAlign:"center",lineHeight:60,marginBottom:12},score:{flexDirection:"row-reverse",justifyContent:"space-between",padding:12,borderBottomWidth:1,borderBottomColor:"#EDF0F3"},scoreTitle:{color:C.text,fontSize:13},scoreVal:{fontWeight:"800",color:C.dark},total:{backgroundColor:C.pale,borderBottomWidth:0,marginTop:5,borderRadius:8},sectionTitle:{fontSize:16,fontWeight:"800",color:C.dark,textAlign:"right",marginTop:20,marginBottom:10},barWrap:{marginBottom:12},barHead:{flexDirection:"row-reverse",justifyContent:"space-between",marginBottom:5},barTitle:{fontSize:12,color:C.text,fontWeight:"700"},barValue:{fontSize:12,color:C.dark,fontWeight:"800"},barTrack:{height:10,backgroundColor:"#E8EBEF",borderRadius:8,overflow:"hidden"},barFill:{height:"100%",backgroundColor:C.primary,borderRadius:8},metrics:{flexDirection:"row",gap:10},metric:{flex:1,backgroundColor:C.pale,padding:13,borderRadius:10,alignItems:"center",marginBottom:10},metricValue:{fontSize:21,fontWeight:"800",color:C.dark},metricTitle:{fontSize:11,color:C.muted,marginTop:5},toggle:{flexDirection:"row-reverse",justifyContent:"space-between",alignItems:"center",padding:12,backgroundColor:C.bg,borderRadius:9},toggleValue:{fontWeight:"800",color:C.dark},
+  attachmentButton:{flexDirection:"row",alignItems:"center",gap:8,borderWidth:1,borderColor:C.border,borderRadius:12,paddingVertical:12,paddingHorizontal:14,marginTop:8,backgroundColor:"#FFFFFF"},
+  attachmentButtonText:{color:C.primary,fontWeight:"800",fontSize:14},
+  attachmentPreview:{marginTop:7,padding:10,borderRadius:10,backgroundColor:C.pale,flexDirection:"row",alignItems:"center",justifyContent:"space-between"},exportRow:{flexDirection:"row-reverse",gap:8,marginBottom:12},exportBtn:{flex:1,padding:12,backgroundColor:C.pale,borderRadius:9,alignItems:"center"},exportText:{fontSize:12,fontWeight:"800",color:C.dark},responseCard:{borderWidth:0,backgroundColor:"#EDEDED",borderRadius:17,padding:14,marginTop:10,shadowColor:"#000",shadowOpacity:.05,shadowRadius:6,elevation:2},responseTitle:{fontWeight:"800",color:C.dark,textAlign:"right"},smallMuted:{fontSize:10,color:C.muted,textAlign:"right"},answerList:{borderTopWidth:1,borderTopColor:C.border,marginTop:10,paddingTop:7},answerLine:{paddingVertical:7,borderBottomWidth:1,borderBottomColor:"#F0F1F3"},answerText:{fontSize:12,color:C.text,textAlign:"right",lineHeight:19},answerValue:{fontSize:12,color:C.dark,fontWeight:"800",textAlign:"left",marginTop:3},empty:{textAlign:"center",color:C.muted,padding:15},selectedPanel:{marginTop:14,padding:12,borderRadius:10,backgroundColor:C.bg},dropdownButton:{minHeight:54,borderWidth:1.5,borderColor:"#8E8E8E",borderRadius:14,backgroundColor:"#F4F4F4",padding:14,flexDirection:"row-reverse",alignItems:"center",justifyContent:"space-between",marginBottom:9},dropdownButtonText:{fontSize:13,color:C.text,textAlign:"right",flex:1},dropdownArrow:{color:C.dark,fontWeight:"800",marginLeft:8},dropdownPanel:{borderWidth:1,borderColor:C.border,borderRadius:10,padding:9,backgroundColor:"#FAFBFC",marginBottom:10},dropdownList:{maxHeight:230,marginTop:6},dropdownOption:{paddingVertical:11,paddingHorizontal:8,borderBottomWidth:1,borderBottomColor:"#E9EDF1"},dropdownOptionActive:{backgroundColor:C.pale},dropdownOptionText:{fontSize:13,color:C.text,textAlign:"right"},bulkActions:{marginTop:12,marginBottom:8},bulkActionButtons:{flexDirection:"row-reverse",flexWrap:"wrap",gap:7,marginTop:8},smallAction:{borderWidth:1,borderColor:C.border,borderRadius:8,paddingVertical:7,paddingHorizontal:9,backgroundColor:"#fff"},smallActionText:{fontSize:11,color:C.dark,fontWeight:"700"},bulkEmployeeList:{maxHeight:300,borderWidth:1,borderColor:C.border,borderRadius:10,paddingHorizontal:8,marginTop:5},bulkEmployeeRow:{flexDirection:"row-reverse",alignItems:"center",gap:10,paddingVertical:10,borderBottomWidth:1,borderBottomColor:"#EDF0F3"},checkboxBox:{width:23,height:23,borderRadius:5,borderWidth:1,borderColor:C.border,alignItems:"center",justifyContent:"center",backgroundColor:"#fff"},checkboxBoxActive:{backgroundColor:C.primary,borderColor:C.primary},checkboxMark:{color:"#fff",fontWeight:"900"},loading:{position:"absolute",top:8,right:8,backgroundColor:"#fff",padding:7,borderRadius:20},bottomNav:{position:"absolute",left:0,right:0,bottom:0,height:78,backgroundColor:"#fff",borderTopWidth:1,borderTopColor:"#D8D8D8",flexDirection:"row-reverse",justifyContent:"space-around",alignItems:"center",paddingBottom:7,shadowOpacity:.08,shadowRadius:8,elevation:10},navItem:{flex:1,alignItems:"center",justifyContent:"center"},navIcon:{width:42,height:42,borderRadius:21,alignItems:"center",justifyContent:"center",backgroundColor:"#E8E8E8"},navIconActive:{backgroundColor:C.primary},navLabel:{fontSize:10,color:"#9A9A9A",fontWeight:"700",marginTop:3},navLabelActive:{color:C.primary,fontWeight:"900"},noticeRow:{flexDirection:"row-reverse",alignItems:"center",gap:12},noticeIcon:{width:50,height:50,borderRadius:25,backgroundColor:"#F1F3F5",alignItems:"center",justifyContent:"center"},profileHead:{flexDirection:"row-reverse",alignItems:"center",gap:12,marginBottom:10},profileIcon:{width:58,height:58,borderRadius:29,backgroundColor:"#F1F3F5",alignItems:"center",justifyContent:"center"}
 });
